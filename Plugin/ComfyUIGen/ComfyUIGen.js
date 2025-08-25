@@ -100,8 +100,9 @@ function resolveSeed(seedCandidate) {
 }
 
 // 纯粹的数据替换 - 直接替换占位符为具体值（含种子自动处理）
-function fillWorkflowParameters(workflow, userPrompt, config) {
+function fillWorkflowParameters(workflow, args, config) {
     const settings = config.userSettings || {};
+    const userPrompt = args.prompt || '';
     
     // 构建LoRA字符串
     const lorasString = buildLoRAsString(settings.loras || []);
@@ -116,13 +117,20 @@ function fillWorkflowParameters(workflow, userPrompt, config) {
     
     // 先解析种子：当配置默认种子为 -1 或非法时，运行时自动改为随机合法值（不透传 -1）
     const resolvedSeed = resolveSeed(settings.defaultSeed);
+
+    // 构建负面提示词
+    const negativePromptParts = [
+        settings.negativePrompt,
+        args.negative_prompt
+    ].filter(part => part && String(part).trim());
+    const negativePrompt = negativePromptParts.join(', ');
     
     // 构建替换映射
     const replacements = {
-        // 基础参数
+        // 基础参数 - 优先使用args传入的值
         '{{MODEL}}': settings.defaultModel || 'sd_xl_base_1.0.safetensors',
-        '{{WIDTH}}': settings.defaultWidth || 1024,
-        '{{HEIGHT}}': settings.defaultHeight || 1024,
+        '{{WIDTH}}': args.width || settings.defaultWidth || 1024,
+        '{{HEIGHT}}': args.height || settings.defaultHeight || 1024,
         '{{STEPS}}': settings.defaultSteps || 30,
         '{{CFG}}': settings.defaultCfg || 7.5,
         '{{SAMPLER}}': settings.defaultSampler || 'dpmpp_2m',
@@ -133,26 +141,59 @@ function fillWorkflowParameters(workflow, userPrompt, config) {
         
         // 提示词相关
         '{{POSITIVE_PROMPT}}': positivePrompt,
-        '{{NEGATIVE_PROMPT}}': settings.negativePrompt || '',
+        '{{NEGATIVE_PROMPT}}': negativePrompt,
         '{{USER_PROMPT}}': userPrompt || '',
         '{{PROMPT_INPUT}}': userPrompt || '', // 独立提示词输入
         
         // 组件字符串
         '{{LORAS}}': lorasString,
-        '{{QUALITY_TAGS}}': settings.qualityTags || ''
+        '{{QUALITY_TAGS}}': settings.qualityTags || '',
+
+        // FaceDetailer 默认值
+        '{{FD_SAM_THRESHOLD}}': settings.faceDetailerSamThreshold || 0.93,
+        '{{FD_DROP_SIZE}}': settings.faceDetailerDropSize || 10,
+        '{{FD_SAM_BBOX_EXPANSION}}': settings.faceDetailerSamBboxExpansion || 0,
+        '{{FD_NOISE_MASK}}': settings.faceDetailerNoiseMask === false ? 'false' : 'true',
+        '{{FD_GUIDE_SIZE_FOR}}': settings.faceDetailerGuideSizeFor === false ? 'false' : 'true',
+        '{{FD_WILDCARD}}': settings.faceDetailerWildcard || '',
+        '{{FD_CYCLE}}': settings.faceDetailerCycle || 1,
+        '{{FD_SAM_MASK_HINT_THRESHOLD}}': settings.faceDetailerSamMaskHintThreshold || 0.7,
+        '{{FD_FORCE_INPAINT}}': settings.faceDetailerForceInpaint === false ? 'false' : 'true',
+        '{{FD_SAM_MASK_HINT_USE_NEGATIVE}}': settings.faceDetailerSamMaskHintUseNegative || 'False',
+        '{{FD_MAX_SIZE}}': settings.faceDetailerMaxSize || 1024,
+        '{{FD_SAM_DILATION}}': settings.faceDetailerSamDilation || 0,
+        '{{FD_SAM_DETECTION_HINT}}': settings.faceDetailerSamDetectionHint || 'center-1',
+        '{{FD_GUIDE_SIZE}}': settings.faceDetailerGuideSize || 512
     };
     
-    // 执行字符串替换
-    let workflowString = JSON.stringify(workflow);
-    for (const [placeholder, value] of Object.entries(replacements)) {
-        const regex = new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g');
-        workflowString = workflowString.replace(regex, String(value));
+    // 安全的JSON替换 - 先解析为对象，然后递归替换
+    function replaceInObject(obj, replacements) {
+        if (typeof obj === 'string') {
+            // 对字符串值进行占位符替换
+            let result = obj;
+            for (const [placeholder, value] of Object.entries(replacements)) {
+                if (result.includes(placeholder)) {
+                    result = result.replace(new RegExp(placeholder.replace(/[{}]/g, '\\$&'), 'g'), String(value));
+                }
+            }
+            return result;
+        } else if (Array.isArray(obj)) {
+            return obj.map(item => replaceInObject(item, replacements));
+        } else if (obj !== null && typeof obj === 'object') {
+            const newObj = {};
+            for (const [key, value] of Object.entries(obj)) {
+                newObj[key] = replaceInObject(value, replacements);
+            }
+            return newObj;
+        }
+        return obj;
     }
     
     // 在 DEBUG 模式下输出最终使用的种子，便于回溯
     debugLog('Resolved seed used for this request:', replacements['{{SEED}}']);
     
-    return JSON.parse(workflowString);
+    // 使用安全的对象替换方法
+    return replaceInObject(workflow, replacements);
 }
 
 // 构建LoRA字符串
@@ -339,8 +380,12 @@ async function generateImageAndSave(args) {
     for (const wfName of tryWorkflows) {
         try {
             debugLog(`Attempting workflow: ${wfName}`);
-            const wf = await loadWorkflowTemplate(wfName);
-            const updated = fillWorkflowParameters(wf, userPrompt, config);
+            const wfTemplate = await loadWorkflowTemplate(wfName);
+            
+            // 兼容旧格式（直接是工作流）和新格式（包含元数据和 workflow 键）
+            const workflowObject = wfTemplate.workflow || wfTemplate;
+
+            const updated = fillWorkflowParameters(workflowObject, args, config);
             const queueResult = await queuePrompt(updated, config);
             debugLog('Queued with prompt_id:', queueResult.prompt_id);
 
