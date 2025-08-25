@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": ""
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
@@ -18,8 +18,12 @@
     "chinese-lunar-calendar": "^1.0.1",
     "chokidar": "^3.5.3",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
+    "mailparser": "^3.7.4",
+    "turndown": "^7.2.1",
+    "node-imap": "^0.9.6",
     "flatted": "^3.3.3",
     "hnswlib-node": "^1.4.2",
     "ioredis": "^5.6.1",
@@ -42,4 +46,3 @@
     "ws": "^8.17.0"
   }
 }
-
