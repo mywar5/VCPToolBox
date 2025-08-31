@@ -3,6 +3,9 @@ const fs = require('fs').promises;
 const { fileURLToPath } = require('url');
 const mime = require('mime-types');
 
+const failedFetchCache = new Map();
+const CACHE_EXPIRATION_MS = 30000; // 30秒内防止重复失败请求
+
 // 存储对 WebSocketServer 的引用
 let webSocketServer = null;
 
@@ -46,6 +49,18 @@ async function fetchFile(fileUrl, requestIp) {
     }
 
     // 2. 本地文件不存在，尝试从来源的分布式服务器获取
+
+    // --- 新增：检查缓存以防止循环 ---
+    const cachedFailure = failedFetchCache.get(fileUrl);
+    if (cachedFailure && (Date.now() - cachedFailure.timestamp < CACHE_EXPIRATION_MS)) {
+        // 清理过期的缓存条目
+        if (Date.now() - cachedFailure.timestamp > CACHE_EXPIRATION_MS) {
+            failedFetchCache.delete(fileUrl);
+        } else {
+            throw new Error(`文件获取在短时间内已失败，为防止循环已中断。错误: ${cachedFailure.error}`);
+        }
+    }
+
     if (!requestIp) {
         throw new Error('无法确定请求来源，因为缺少 requestIp。');
     }
@@ -75,6 +90,11 @@ async function fetchFile(fileUrl, requestIp) {
             throw new Error(`从服务器 ${serverId} 获取文件失败: ${errorMsg}`);
         }
     } catch (e) {
+        // --- 新增：缓存失败记录 ---
+        failedFetchCache.set(fileUrl, {
+            timestamp: Date.now(),
+            error: e.message
+        });
         throw new Error(`通过 WebSocket 从服务器 ${serverId} 请求文件时发生错误: ${e.message}`);
     }
 }
