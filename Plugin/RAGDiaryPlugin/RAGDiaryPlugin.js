@@ -230,7 +230,7 @@ class RAGDiaryPlugin {
             return messages;
         }
 
-        const ragDeclarations = [...systemMessage.content.matchAll(/\[\[(.*?)日记本\]\]/g)];
+        const ragDeclarations = [...systemMessage.content.matchAll(/\[\[(.*?)日记本(?::(\d+\.?\d*))?\]\]/g)];
         const fullTextDeclarations = [...systemMessage.content.matchAll(/<<(.*?)日记本>>/g)];
 
         if (ragDeclarations.length === 0 && fullTextDeclarations.length === 0) {
@@ -299,12 +299,18 @@ class RAGDiaryPlugin {
         const dynamicK = this._calculateDynamicK(userContent, aiContent);
 
         for (const match of ragDeclarations) {
-            const placeholder = match[0]; // 例如 [[公共日记本]]
-            const dbName = match[1];      // 例如 "公共"
+            const placeholder = match[0];      // 例如 [[小克日记本:1.5]]
+            const dbName = match[1];           // 例如 "小克"
+            const kMultiplier = match[2] ? parseFloat(match[2]) : 1.0; // 获取K值乘数
             const displayName = dbName + '日记本';
 
+            const finalK = Math.max(1, Math.round(dynamicK * kMultiplier)); // 计算最终K值, 确保至少为1
+
             console.log(`[RAGDiaryPlugin] 正在为 "${displayName}" 检索相关信息 (数据库键: ${dbName})...`);
-            const searchResults = await this.vectorDBManager.search(dbName, queryVector, dynamicK); // <--- 使用动态 k 值
+            if (kMultiplier !== 1.0) {
+                console.log(`[RAGDiaryPlugin] 应用K值乘数: ${kMultiplier}. (基础K: ${dynamicK} -> 最终K: ${finalK})`);
+            }
+            const searchResults = await this.vectorDBManager.search(dbName, queryVector, finalK); // <--- 使用最终 k 值
 
             let retrievedContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
             if (searchResults && searchResults.length > 0) {
