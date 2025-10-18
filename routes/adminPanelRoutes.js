@@ -695,10 +695,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         try {
             await fs.access(specificFolderParentPath); 
             const files = await fs.readdir(specificFolderParentPath);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            const PREVIEW_LENGTH = 100; 
+            const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
+            const PREVIEW_LENGTH = 100;
 
-            const notes = await Promise.all(txtFiles.map(async (file) => {
+            const notes = await Promise.all(noteFiles.map(async (file) => {
                 const filePath = path.join(specificFolderParentPath, file);
                 const stats = await fs.stat(filePath);
                 let preview = '';
@@ -773,9 +773,9 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             for (const dir of foldersToSearch) {
                 const files = await fs.readdir(dir.path);
-                const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
+                const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
 
-                for (const fileName of txtFiles) {
+                for (const fileName of noteFiles) {
                     const filePath = path.join(dir.path, fileName);
                     try {
                         const content = await fs.readFile(filePath, 'utf-8');
@@ -944,6 +944,40 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // --- End Daily Notes API ---
 
     // --- Agent Files API ---
+    const AGENT_MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
+
+    // GET agent map
+    adminApiRouter.get('/agents/map', async (req, res) => {
+        try {
+            const content = await fs.readFile(AGENT_MAP_FILE, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.json({}); // Return empty object if file doesn't exist
+            } else {
+                console.error('[AdminPanelRoutes API] Error reading agent_map.json:', error);
+                res.status(500).json({ error: 'Failed to read agent map file', details: error.message });
+            }
+        }
+    });
+
+    // POST to save agent map
+    adminApiRouter.post('/agents/map', async (req, res) => {
+        const newMap = req.body;
+        if (typeof newMap !== 'object' || newMap === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            await fs.writeFile(AGENT_MAP_FILE, JSON.stringify(newMap, null, 2), 'utf-8');
+            // Note: For changes to be reflected in chat, the agentManager needs to be reloaded.
+            // This currently requires a server restart.
+            res.json({ message: 'Agent map saved successfully. A server restart may be required for changes to apply.' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing agent_map.json:', error);
+            res.status(500).json({ error: 'Failed to write agent map file', details: error.message });
+        }
+    });
+
     // GET list of agent .txt files
     adminApiRouter.get('/agents', async (req, res) => {
         try {
@@ -954,6 +988,30 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error listing agent files:', error);
             res.status(500).json({ error: 'Failed to list agent files', details: error.message });
+        }
+    });
+
+    // POST to create a new agent .txt file
+    adminApiRouter.post('/agents/new-file', async (req, res) => {
+        const { fileName } = req.body;
+
+        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
+        }
+
+        const filePath = path.join(AGENT_FILES_DIR, fileName);
+
+        try {
+            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
+            await fs.writeFile(filePath, '', { flag: 'wx' });
+            res.json({ message: `File '${fileName}' created successfully.` });
+        } catch (error) {
+            if (error.code === 'EEXIST') {
+                res.status(409).json({ error: `File '${fileName}' already exists.` });
+            } else {
+                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
+                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
+            }
         }
     });
 
@@ -1002,6 +1060,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
         }
     });
+
     // --- End Agent Files API ---
 
     // --- TVS Variable Files API ---
@@ -1145,6 +1204,57 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
     // --- End Semantic Groups API ---
+
+    // --- Thinking Chains API ---
+    adminApiRouter.get('/thinking-chains', async (req, res) => {
+        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
+        try {
+            const content = await fs.readFile(chainsPath, 'utf-8');
+            res.json(JSON.parse(content));
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error reading meta_thinking_chains.json:', error);
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: 'Thinking chains file not found.' });
+            } else {
+                res.status(500).json({ error: 'Failed to read thinking chains file', details: error.message });
+            }
+        }
+    });
+
+    adminApiRouter.post('/thinking-chains', async (req, res) => {
+        const chainsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'meta_thinking_chains.json');
+        const data = req.body;
+        if (typeof data !== 'object' || data === null) {
+             return res.status(400).json({ error: 'Invalid request body. Expected a JSON object.' });
+        }
+        try {
+            await fs.writeFile(chainsPath, JSON.stringify(data, null, 2), 'utf-8');
+            res.json({ message: '思维链配置已成功保存。' });
+        } catch (error) {
+            console.error('[AdminPanelRoutes API] Error writing meta_thinking_chains.json:', error);
+            res.status(500).json({ error: 'Failed to write thinking chains file', details: error.message });
+        }
+    });
+
+    adminApiRouter.get('/available-clusters', async (req, res) => {
+        try {
+            await fs.access(dailyNoteRootPath);
+            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
+            const folders = entries
+                .filter(entry => entry.isDirectory() && entry.name.endsWith('簇'))
+                .map(entry => entry.name);
+            res.json({ clusters: folders });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.warn('[AdminPanelRoutes API] /available-clusters - dailynote directory not found.');
+                res.json({ clusters: [] });
+            } else {
+                console.error('[AdminPanelRoutes API] Error listing available clusters:', error);
+                res.status(500).json({ error: 'Failed to list available clusters', details: error.message });
+            }
+        }
+    });
+    // --- End Thinking Chains API ---
 
     // --- VCPTavern API ---
     // This section is now handled by the VCPTavern plugin's own registerRoutes method.

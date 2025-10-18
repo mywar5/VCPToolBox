@@ -26,9 +26,10 @@ const AD_SELECTORS = [
 ];
 
 // A more robust auto-scroll function to handle lazy-loading content
-async function autoScroll(page) {
+async function autoScroll(page, mode = 'text') {
     let lastHeight = await page.evaluate('document.body.scrollHeight');
-    const maxScrolls = 5; // Limit scrolls to a reasonable number (e.g., 5 screens)
+    // 根据模式设置滚动次数：截图模式3次，文字模式5次
+    const maxScrolls = mode === 'snapshot' ? 3 : 5;
     let scrolls = 0;
 
     while (scrolls < maxScrolls) {
@@ -68,6 +69,86 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
         // We no longer need to set UserAgent manually, AnonymizeUAPlugin handles it.
         await page.setViewport({ width: 1280, height: 800 });
 
+        // 设置 Cookies（支持三种格式）
+        const urlObj = new URL(url);
+        let cookiesToSet = [];
+
+        // 辅助函数：解析原始 cookie 字符串
+        const parseRawCookies = (cookieString, targetUrl) => {
+            const cookiePairs = cookieString.split(';').map(pair => pair.trim()).filter(pair => pair);
+            return cookiePairs.map(pair => {
+                const equalIndex = pair.indexOf('=');
+                if (equalIndex === -1) return null;
+                
+                const name = pair.substring(0, equalIndex).trim();
+                const value = pair.substring(equalIndex + 1).trim();
+                
+                return {
+                    name,
+                    value,
+                    domain: `.${targetUrl.hostname}`,
+                    url: `${targetUrl.protocol}//${targetUrl.hostname}`
+                };
+            }).filter(cookie => cookie !== null);
+        };
+
+        // 方式1：多站点原始格式 (FETCH_COOKIES_RAW_MULTI) - 优先级最高
+        const fetchCookiesRawMulti = process.env.FETCH_COOKIES_RAW_MULTI;
+        if (fetchCookiesRawMulti && fetchCookiesRawMulti.trim()) {
+            try {
+                const cookiesMap = JSON.parse(fetchCookiesRawMulti);
+                // 遍历所有域名配置，找到匹配当前访问 URL 的
+                for (const [domain, cookieString] of Object.entries(cookiesMap)) {
+                    if (urlObj.hostname.includes(domain)) {
+                        cookiesToSet = parseRawCookies(cookieString, urlObj);
+                        break;
+                    }
+                }
+            } catch (multiCookieError) {
+                console.error('解析多站点 Cookies 失败:', multiCookieError.message);
+            }
+        }
+        
+        // 方式2：单站点原始格式 (FETCH_COOKIES_RAW)
+        if (cookiesToSet.length === 0) {
+            const fetchCookiesRaw = process.env.FETCH_COOKIES_RAW;
+            if (fetchCookiesRaw && fetchCookiesRaw.trim()) {
+                try {
+                    cookiesToSet = parseRawCookies(fetchCookiesRaw, urlObj);
+                } catch (rawCookieError) {
+                    console.error('解析原始 Cookies 失败:', rawCookieError.message);
+                }
+            }
+        }
+        
+        // 方式3：JSON 数组格式 (FETCH_COOKIES)
+        if (cookiesToSet.length === 0) {
+            const fetchCookies = process.env.FETCH_COOKIES;
+            if (fetchCookies && fetchCookies.trim()) {
+                try {
+                    const cookies = JSON.parse(fetchCookies);
+                    if (Array.isArray(cookies) && cookies.length > 0) {
+                        // 确保每个 cookie 都有 url 字段（Puppeteer 要求）
+                        cookiesToSet = cookies.map(cookie => ({
+                            ...cookie,
+                            url: cookie.url || `${urlObj.protocol}//${cookie.domain || urlObj.hostname}`
+                        }));
+                    }
+                } catch (cookieError) {
+                    console.error('解析 JSON Cookies 失败:', cookieError.message);
+                }
+            }
+        }
+
+        // 应用 cookies
+        if (cookiesToSet.length > 0) {
+            try {
+                await page.setCookie(...cookiesToSet);
+            } catch (setCookieError) {
+                console.error('设置 Cookies 失败:', setCookieError.message);
+            }
+        }
+
         await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
 
         if (mode === 'snapshot') {
@@ -77,7 +158,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }
 
             // Use the robust auto-scroll function
-            await autoScroll(page);
+            await autoScroll(page, mode);
             
             // 网页快照模式
             const imageBuffer = await page.screenshot({ fullPage: true, type: 'png' });
@@ -124,6 +205,7 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             };
         } else {
             // 默认的文本提取模式
+            await autoScroll(page, mode); // 滚动页面以加载所有懒加载内容
             await page.evaluate((selectors) => {
                 selectors.forEach(selector => {
                     document.querySelectorAll(selector).forEach(el => el.remove());
@@ -131,6 +213,16 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
             }, AD_SELECTORS);
 
             const extractedData = await page.evaluate(() => {
+                // Helper to resolve relative URLs
+                const toAbsoluteURL = (url) => {
+                    try {
+                        // new URL() will correctly handle absolute URLs and resolve relative ones.
+                        return new URL(url, window.location.href).href;
+                    } catch (e) {
+                        return url; // Return original if it's not a valid URL format (e.g., data: URI)
+                    }
+                };
+
                 // 1. 精准提取正文
                 const contentSelectors = ['[data-testid="article"]', 'article', '.content', '.main', '.post-content', 'main'];
                 let mainContent = null;
@@ -138,7 +230,6 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                     mainContent = document.querySelector(selector);
                     if (mainContent) break;
                 }
-                // 如果找不到特定正文容器，就退回到body，但主要为了短内容页面
                 if (!mainContent) mainContent = document.body;
 
                 let text = mainContent.innerText || "";
@@ -146,36 +237,71 @@ async function fetchWithPuppeteer(url, mode = 'text', proxyPort = null) {
                 const potentialText = text.split('\n').map(line => line.trim()).filter(line => line.length > 0).join('\n');
 
                 // 2. 全面提取链接 (从整个body)
-                let allLinks = Array.from(document.body.querySelectorAll('a'));
-                let links = allLinks.map(link => {
+                const allLinks = Array.from(document.body.querySelectorAll('a'));
+                const links = allLinks.map(link => {
                     const text = (link.innerText || "").trim();
                     const url = link.href;
-                    if (text && url && url.startsWith('http') && link.offsetParent !== null) { // 确保链接可见、有文本、是有效链接
+                    if (text && url && url.startsWith('http') && link.offsetParent !== null) {
                         return { text, url };
                     }
                     return null;
                 }).filter(item => item !== null);
-                
-                // 去重
                 const uniqueLinks = Array.from(new Map(links.map(item => [item.url, item])).values());
 
-                // 3. 智能组合输出
-                // 如果是文章页 (文本长)
-                if (potentialText.length > 200) {
-                    let combinedResult = potentialText;
-                    if (uniqueLinks.length > 0) {
-                        const linkText = uniqueLinks.map(l => `- ${l.text}: ${l.url}`).join('\n');
-                        combinedResult += '\n\n--- 页面包含的链接 ---\n' + linkText;
+                // 3. 提取图片信息
+                const allImages = Array.from(document.body.querySelectorAll('img'));
+                const images = allImages.map(img => {
+                    const src = img.src;
+                    const alt = (img.alt || img.title || "").trim();
+                    // Check for visibility and valid, non-data URI src
+                    if (src && !src.startsWith('data:') && img.offsetParent !== null) {
+                        return { text: alt || 'Untitled Image', url: toAbsoluteURL(src) };
                     }
-                    return combinedResult;
-                }
-                // 如果是列表页 (文本短)
-                else {
-                    if (uniqueLinks.length > 0) {
-                        return uniqueLinks; // 主要返回链接
+                    return null;
+                }).filter(item => item !== null);
+                const uniqueImages = Array.from(new Map(images.map(item => [item.url, item])).values());
+
+                // 4. 提取视频信息
+                const allVideos = Array.from(document.body.querySelectorAll('video'));
+                const videos = allVideos.map(video => {
+                    const src = video.currentSrc || video.src || (video.querySelector('source') ? video.querySelector('source').src : null);
+                    const title = (video.title || video.getAttribute('aria-label') || "").trim();
+                    if (src && !src.startsWith('blob:') && video.offsetParent !== null) {
+                        return { text: title || 'Untitled Video', url: toAbsoluteURL(src) };
                     }
-                    return potentialText; // 如果没链接，返回短文本
+                    return null;
+                }).filter(item => item !== null);
+                const uniqueVideos = Array.from(new Map(videos.map(item => [item.url, item])).values());
+
+                // 5. 智能组合输出
+                let combinedResult = "";
+                if (potentialText.length > 50) { // Consider it a content page if there's some text
+                    combinedResult += potentialText;
                 }
+
+                if (uniqueLinks.length > 0) {
+                    const linkText = uniqueLinks.map(l => `- ${l.text}: ${l.url}`).join('\n');
+                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的链接 ---\n' + linkText;
+                }
+
+                if (uniqueImages.length > 0) {
+                    const imageText = uniqueImages.map(i => `- [图片] ${i.text}: ${i.url}`).join('\n');
+                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的图片 ---\n' + imageText;
+                }
+
+                if (uniqueVideos.length > 0) {
+                    const videoText = uniqueVideos.map(v => `- [视频] ${v.text}: ${v.url}`).join('\n');
+                    combinedResult += (combinedResult ? '\n\n' : '') + '--- 页面包含的视频 ---\n' + videoText;
+                }
+
+                // Fallback for list-like pages with little text but many links/media
+                if (!combinedResult.trim()) {
+                    if (uniqueLinks.length > 0) return uniqueLinks;
+                    if (uniqueImages.length > 0) return uniqueImages;
+                    if (uniqueVideos.length > 0) return uniqueVideos;
+                }
+                
+                return combinedResult || potentialText; // Return combined or just text if nothing else found
             });
 
             return extractedData;

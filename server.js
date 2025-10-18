@@ -16,6 +16,8 @@ logger.overrideConsole();
 const AGENT_DIR = path.join(__dirname, 'Agent'); // 定义 Agent 目录
 const TVS_DIR = path.join(__dirname, 'TVStxt'); // 新增：定义 TVStxt 目录
 const crypto = require('crypto');
+const agentManager = require('./modules/agentManager.js'); // 新增：Agent管理器
+const tvsManager = require('./modules/tvsManager.js'); // 新增：TVS管理器
 const messageProcessor = require('./modules/messageProcessor.js');
 const { VectorDBManager } = require('./VectorDBManager.js'); // 新增：引入向量数据库管理器
 const pluginManager = require('./Plugin.js');
@@ -30,6 +32,12 @@ const BLACKLIST_FILE = path.join(__dirname, 'ip_blacklist.json');
 const MAX_API_ERRORS = 5;
 let ipBlacklist = [];
 const apiErrorCounts = new Map();
+
+const loginAttempts = new Map();
+const tempBlocks = new Map();
+const MAX_LOGIN_ATTEMPTS = 5; // 15分钟内最多尝试5次
+const LOGIN_ATTEMPT_WINDOW = 15 * 60 * 1000; // 15分钟的窗口
+const TEMP_BLOCK_DURATION = 30 * 60 * 1000; // 封禁30分钟
 
 const ChatCompletionHandler = require('./modules/chatCompletionHandler.js');
 
@@ -219,13 +227,19 @@ const cachedEmojiLists = new Map();
 
 // Authentication middleware for Admin Panel and Admin API
 const adminAuth = (req, res, next) => {
-    // This middleware now ONLY protects the API endpoint. Static files are served before this.
-    const isAdminApiPath = req.path.startsWith('/admin_api');
+    // This middleware protects both the Admin Panel static files and its API endpoints.
+    const isAdminPath = req.path.startsWith('/admin_api') || req.path.startsWith('/AdminPanel');
 
-    if (isAdminApiPath) {
-        // Check if admin credentials are configured
+    if (isAdminPath) {
+        let clientIp = req.ip;
+        if (clientIp && clientIp.substr(0, 7) === "::ffff:") {
+            clientIp = clientIp.substr(7);
+        }
+
+        // 1. 检查管理员凭据是否已配置 (这是最高优先级的安全检查)
         if (!ADMIN_USERNAME || !ADMIN_PASSWORD) {
             console.error('[AdminAuth] AdminUsername or AdminPassword not set in config.env. Admin panel is disabled.');
+            // 对API和页面请求返回不同的错误格式
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
                  res.status(503).json({
                     error: 'Service Unavailable: Admin credentials not configured.',
@@ -234,12 +248,46 @@ const adminAuth = (req, res, next) => {
             } else {
                  res.status(503).send('<h1>503 Service Unavailable</h1><p>Admin credentials (AdminUsername, AdminPassword) are not configured in config.env. Please configure them to enable the admin panel.</p>');
             }
-            return; // Stop further processing
+            return; // 停止进一步处理
         }
 
-        // Credentials are configured, proceed with Basic Auth
+        // 2. 检查IP是否被临时封禁
+        const blockInfo = tempBlocks.get(clientIp);
+        if (blockInfo && Date.now() < blockInfo.expires) {
+            console.warn(`[AdminAuth] Blocked login attempt from IP: ${clientIp}. Block expires at ${new Date(blockInfo.expires).toLocaleString()}.`);
+            const timeLeft = Math.ceil((blockInfo.expires - Date.now()) / 1000 / 60);
+            res.setHeader('Retry-After', Math.ceil((blockInfo.expires - Date.now()) / 1000)); // In seconds
+            return res.status(429).json({
+                error: 'Too Many Requests',
+                message: `由于登录失败次数过多，您的IP已被暂时封禁。请在 ${timeLeft} 分钟后重试。`
+            });
+        }
+
+        // 3. 凭据已配置，继续进行 Basic Auth
         const credentials = basicAuth(req);
         if (!credentials || credentials.name !== ADMIN_USERNAME || credentials.pass !== ADMIN_PASSWORD) {
+            // 认证失败，处理登录尝试计数
+            if (clientIp) {
+                const now = Date.now();
+                let attemptInfo = loginAttempts.get(clientIp) || { count: 0, firstAttempt: now };
+
+                // 如果时间窗口已过，则重置计数
+                if (now - attemptInfo.firstAttempt > LOGIN_ATTEMPT_WINDOW) {
+                    attemptInfo = { count: 0, firstAttempt: now };
+                }
+
+                attemptInfo.count++;
+                console.log(`[AdminAuth] Failed login attempt from IP: ${clientIp}. Count: ${attemptInfo.count}/${MAX_LOGIN_ATTEMPTS}`);
+
+                if (attemptInfo.count >= MAX_LOGIN_ATTEMPTS) {
+                    console.warn(`[AdminAuth] IP ${clientIp} has been temporarily blocked for ${TEMP_BLOCK_DURATION / 60000} minutes due to excessive failed login attempts.`);
+                    tempBlocks.set(clientIp, { expires: now + TEMP_BLOCK_DURATION });
+                    loginAttempts.delete(clientIp); // 封禁后清除尝试记录
+                } else {
+                    loginAttempts.set(clientIp, attemptInfo);
+                }
+            }
+            
             res.setHeader('WWW-Authenticate', 'Basic realm="Admin Panel"');
             if (req.path.startsWith('/admin_api') || (req.headers.accept && req.headers.accept.includes('application/json'))) {
                 return res.status(401).json({ error: 'Unauthorized' });
@@ -247,16 +295,23 @@ const adminAuth = (req, res, next) => {
                 return res.status(401).send('<h1>401 Unauthorized</h1><p>Authentication required to access the Admin Panel.</p>');
             }
         }
-        // Authentication successful
+        
+        // 4. 认证成功
+        if (clientIp) {
+            loginAttempts.delete(clientIp); // 成功后清除尝试记录
+        }
         return next();
     }
-    // Not an admin path, proceed
+    
+    // 非管理面板路径，继续
     return next();
 };
-// Serve Admin Panel static files FIRST, before any authentication.
-app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
+// Apply admin authentication to all /AdminPanel and /admin_api routes.
+// This MUST come before serving static files to protect the panel itself.
+app.use(adminAuth);
 
-app.use(adminAuth); // Apply admin authentication to subsequent routes, primarily /admin_api.
+// Serve Admin Panel static files only after successful authentication.
+app.use('/AdminPanel', express.static(path.join(__dirname, 'AdminPanel')));
 
 
 // Image server logic is now handled by the ImageServer plugin.
@@ -608,30 +663,17 @@ async function handleDiaryFromAIResponse(responseText) {
             const noteBlockContent = match[1].trim();
             if (DEBUG_MODE) console.log('[handleDiaryFromAIResponse] Found structured daily note block.');
 
-            // Extract Maid, Date, Content from noteBlockContent
-            const lines = noteBlockContent.trim().split('\n');
-            let maidName = null;
-            let dateString = null;
-            let contentLines = [];
-            let isContentSection = false;
+            const maidMatch = noteBlockContent.match(/^\s*Maid:\s*(.+?)$/m);
+            const dateMatch = noteBlockContent.match(/^\s*Date:\s*(.+?)$/m);
 
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (trimmedLine.startsWith('Maid:')) {
-                    maidName = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Date:')) {
-                    dateString = trimmedLine.substring(5).trim();
-                    isContentSection = false;
-                } else if (trimmedLine.startsWith('Content:')) {
-                    isContentSection = true;
-                    const firstContentPart = trimmedLine.substring(8).trim();
-                    if (firstContentPart) contentLines.push(firstContentPart);
-                } else if (isContentSection) {
-                    contentLines.push(line);
-                }
+            const maidName = maidMatch ? maidMatch[1].trim() : null;
+            const dateString = dateMatch ? dateMatch[1].trim() : null;
+
+            let contentText = null;
+            const contentMatch = noteBlockContent.match(/^\s*Content:\s*([\s\S]*)$/m);
+            if (contentMatch) {
+                contentText = contentMatch[1].trim();
             }
-            const contentText = contentLines.join('\n').trim();
 
             if (maidName && dateString && contentText) {
                 const diaryPayload = { maidName, dateString, contentText };
@@ -774,30 +816,51 @@ async function initialize() {
     await pluginManager.loadPlugins();
     console.log('插件加载完成。');
 
-    // --- 新增：为 RAG 插件注入依赖 ---
-    try {
-        const ragPlugin = pluginManager.messagePreprocessors.get('RAGDiaryPlugin');
-        if (ragPlugin && typeof ragPlugin.setDependencies === 'function') {
-            ragPlugin.setDependencies({ vectorDBManager });
-        } else if (ragPlugin) {
-            console.warn('[Server] RAGDiaryPlugin 已加载，但未能找到 setDependencies 方法进行依赖注入。');
-        }
-    } catch (e) {
-        console.error('[Server] 注入 RAGDiaryPlugin 依赖时出错:', e);
-    }
-    // --- 依赖注入结束 ---
-
     pluginManager.setProjectBasePath(__dirname);
     
     console.log('开始初始化服务类插件...');
+    // --- 关键顺序调整 ---
+    // 必须先将 WebSocketServer 实例注入到 PluginManager，
+    // 这样在 initializeServices 内部才能正确地为 VCPLog 等插件注入广播函数。
+    pluginManager.setWebSocketServer(webSocketServer);
+    
     await pluginManager.initializeServices(app, adminPanelRoutes, __dirname);
     // 在所有服务插件都注册完路由后，再将 adminApiRouter 挂载到主 app 上
     app.use('/admin_api', adminPanelRoutes);
     console.log('服务类插件初始化完成，管理面板 API 路由已挂载。');
 
+    // --- 新增：通用依赖注入 ---
+    // 在所有服务都初始化完毕后，再执行依赖注入，确保 VCPLog 等服务已准备就绪。
+    try {
+        const dependencies = {
+            vectorDBManager,
+            vcpLogFunctions: pluginManager.getVCPLogFunctions()
+        };
+        if (DEBUG_MODE) console.log('[Server] Injecting dependencies into plugins...');
+        
+        // 注入到消息预处理器
+        for (const [name, module] of pluginManager.messagePreprocessors) {
+            if (typeof module.setDependencies === 'function') {
+                module.setDependencies(dependencies);
+                if (DEBUG_MODE) console.log(`  - Injected dependencies into message preprocessor: ${name}.`);
+            }
+        }
+        // 注入到服务模块 (排除VCPLog自身)
+        for (const [name, serviceData] of pluginManager.serviceModules) {
+            if (name !== 'VCPLog' && typeof serviceData.module.setDependencies === 'function') {
+                serviceData.module.setDependencies(dependencies);
+                if (DEBUG_MODE) console.log(`  - Injected dependencies into service: ${name}.`);
+            }
+        }
+    } catch (e) {
+        console.error('[Server] An error occurred during dependency injection:', e);
+    }
+    // --- 依赖注入结束 ---
+
     console.log('开始初始化静态插件...');
     await pluginManager.initializeStaticPlugins();
     console.log('静态插件初始化完成。'); // Keep
+    await pluginManager.prewarmPythonPlugins(); // 新增：预热Python插件以解决冷启动问题
     // EmojiListGenerator (static plugin) is automatically executed as part of the initializeStaticPlugins call above.
     // Its script (`emoji-list-generator.js`) will run and generate/update the .txt files
     // in its `generated_lists` directory. No need to call it separately here.
@@ -856,6 +919,16 @@ server = app.listen(port, async () => { // Assign to server variable
     
     // ensureDebugLogDir() is effectively handled by initializeServerLogger() synchronously earlier.
     // If ensureDebugLogDirAsync was meant for other purposes, it can be called where needed.
+    
+    // 新增：初始化Agent管理器
+    console.log('正在初始化Agent管理器...');
+    await agentManager.initialize(DEBUG_MODE);
+    console.log('Agent管理器初始化完成。');
+
+    console.log('正在初始化TVS管理器...');
+    tvsManager.initialize(DEBUG_MODE);
+    console.log('TVS管理器初始化完成。');
+
     await initialize(); // This loads plugins and initializes services
 
     // Initialize the new WebSocketServer
@@ -864,7 +937,7 @@ server = app.listen(port, async () => { // Assign to server variable
     webSocketServer.initialize(server, { debugMode: DEBUG_MODE, vcpKey: vcpKeyValue });
     
     // --- 注入依赖 ---
-    pluginManager.setWebSocketServer(webSocketServer);
+    // pluginManager.setWebSocketServer(webSocketServer); // 已移动到 initializeServices 之前
     webSocketServer.setPluginManager(pluginManager);
     
     // 初始化 FileFetcherServer

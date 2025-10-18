@@ -6,6 +6,7 @@ const schedule = require('node-schedule');
 const dotenv = require('dotenv'); // Ensures dotenv is available
 const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
+const chokidar = require('chokidar');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -23,6 +24,8 @@ class PluginManager {
         this.individualPluginDescriptions = new Map(); // New map for individual descriptions
         this.debugMode = (process.env.DebugMode || "False").toLowerCase() === "true";
         this.webSocketServer = null; // 为 WebSocketServer 实例占位
+        this.isReloading = false;
+        this.reloadTimeout = null;
     }
 
     setWebSocketServer(wss) {
@@ -226,6 +229,41 @@ class PluginManager {
         }
         console.log('[PluginManager] Static plugins initialization process has been started (updates will run in the background).');
     }
+    async prewarmPythonPlugins() {
+        console.log('[PluginManager] Checking for Python plugins to pre-warm...');
+        if (this.plugins.has('SciCalculator')) {
+            console.log('[PluginManager] SciCalculator found. Starting pre-warming of Python scientific libraries in the background.');
+            try {
+                const command = 'python';
+                const args = ['-c', 'import sympy, scipy.stats, scipy.integrate, numpy'];
+                const prewarmProcess = spawn(command, args, {
+                    // 移除 shell: true
+                    windowsHide: true
+                });
+
+                prewarmProcess.on('error', (err) => {
+                    console.warn(`[PluginManager] Python pre-warming process failed to start. Is Python installed and in the system's PATH? Error: ${err.message}`);
+                });
+
+                prewarmProcess.stderr.on('data', (data) => {
+                    console.warn(`[PluginManager] Python pre-warming process stderr: ${data.toString().trim()}`);
+                });
+
+                prewarmProcess.on('exit', (code) => {
+                    if (code === 0) {
+                        console.log('[PluginManager] Python scientific libraries pre-warmed successfully.');
+                    } else {
+                        console.warn(`[PluginManager] Python pre-warming process exited with code ${code}. Please ensure required libraries are installed (pip install sympy scipy numpy).`);
+                    }
+                });
+            } catch (e) {
+                console.error(`[PluginManager] An exception occurred while spawning the Python pre-warming process: ${e.message}`);
+            }
+        } else {
+            if (this.debugMode) console.log('[PluginManager] SciCalculator not found, skipping Python pre-warming.');
+        }
+    }
+    
     
     getPlaceholderValue(placeholder) {
         return this.staticPlaceholderValues.get(placeholder) || `[Placeholder ${placeholder} not found]`;
@@ -332,13 +370,23 @@ class PluginManager {
                                     const scriptPath = path.join(pluginPath, manifest.entryPoint.script);
                                     const module = require(scriptPath);
                                     const initialConfig = this._getPluginConfig(manifest);
+                                    
+                                    // Manually inject essential server configs for service modules
+                                    initialConfig.PORT = process.env.PORT;
+                                    initialConfig.Key = process.env.Key;
+                                    initialConfig.PROJECT_BASE_PATH = this.projectBasePath;
+
                                     if (typeof module.initialize === 'function') {
-                                        await module.initialize(initialConfig);
+                                        const dependencies = {
+                                            vcpLogFunctions: this.getVCPLogFunctions()
+                                        };
+                                        await module.initialize(initialConfig, dependencies);
                                     }
                                     if (isPreprocessor && typeof module.processMessages === 'function') {
                                         discoveredPreprocessors.set(manifest.name, module);
                                     }
-                                    if (isService && typeof module.registerRoutes === 'function') {
+                                    // For both service and hybridservice, store the module for direct calls or routing.
+                                    if (isService) {
                                         this.serviceModules.set(manifest.name, { manifest, module });
                                     }
                                 } catch (e) {
@@ -462,6 +510,18 @@ class PluginManager {
     getServiceModule(name) {
         return this.serviceModules.get(name)?.module;
     }
+    
+    // 新增：获取 VCPLog 插件的推送函数，供其他插件依赖注入
+    getVCPLogFunctions() {
+        const vcpLogModule = this.getServiceModule('VCPLog');
+        if (vcpLogModule) {
+            return {
+                pushVcpLog: vcpLogModule.pushVcpLog,
+                pushVcpInfo: vcpLogModule.pushVcpInfo
+            };
+        }
+        return { pushVcpLog: () => {}, pushVcpInfo: () => {} };
+    }
 
     async processToolCall(toolName, toolArgs, requestIp = null) {
         const plugin = this.plugins.get(toolName);
@@ -514,10 +574,19 @@ class PluginManager {
                delete pluginSpecificArgs.command;
                resultFromPlugin = await this.webSocketServer.forwardCommandToChrome(command, pluginSpecificArgs);
 
+            } else if (plugin.pluginType === 'hybridservice' && plugin.communication?.protocol === 'direct') {
+               // --- 混合服务插件直接调用逻辑 ---
+               if (this.debugMode) console.log(`[PluginManager] Processing direct tool call for hybrid service: ${toolName}`);
+               const serviceModule = this.getServiceModule(toolName);
+               if (serviceModule && typeof serviceModule.processToolCall === 'function') {
+                   resultFromPlugin = await serviceModule.processToolCall(pluginSpecificArgs);
+               } else {
+                   throw new Error(`[PluginManager] Hybrid service plugin "${toolName}" does not have a processToolCall function.`);
+               }
             } else {
                 // --- 本地插件调用逻辑 (现有逻辑) ---
                 if (!((plugin.pluginType === 'synchronous' || plugin.pluginType === 'asynchronous') && plugin.communication?.protocol === 'stdio')) {
-                    throw new Error(`[PluginManager] Local plugin "${toolName}" is not a supported stdio plugin for direct tool call.`);
+                    throw new Error(`[PluginManager] Local plugin "${toolName}" (type: ${plugin.pluginType}) is not a supported stdio plugin for direct tool call.`);
                 }
                 
                 let executionParam = null;
@@ -870,6 +939,16 @@ class PluginManager {
                     app.use(`/api/plugins/${name}`, pluginRouter);
                     if (this.debugMode) console.log(`[PluginManager] Mounted API routes for ${name} at /api/plugins/${name}`);
                 }
+                
+                // VCPLog 特殊处理：注入 WebSocketServer 的广播函数
+                if (name === 'VCPLog' && this.webSocketServer && typeof module.setBroadcastFunctions === 'function') {
+                    if (typeof this.webSocketServer.broadcastVCPInfo === 'function') {
+                        module.setBroadcastFunctions(this.webSocketServer.broadcastVCPInfo);
+                        if (this.debugMode) console.log(`[PluginManager] Injected broadcastVCPInfo into VCPLog.`);
+                    } else {
+                        console.warn(`[PluginManager] WebSocketServer is missing broadcastVCPInfo function. VCPInfo will not be broadcastable.`);
+                    }
+                }
 
                 // 兼容旧的、直接在 app 上注册的 service 插件
                 if (typeof module.registerRoutes === 'function') {
@@ -1001,6 +1080,63 @@ class PluginManager {
                 description: manifest ? manifest.description : 'N/A'
             };
         });
+    }
+    startPluginWatcher() {
+        if (this.debugMode) console.log('[PluginManager] Starting plugin file watcher...');
+        
+        const pathsToWatch = [
+            path.join(PLUGIN_DIR, '**/plugin-manifest.json'),
+            path.join(PLUGIN_DIR, '**/plugin-manifest.json.block')
+        ];
+
+        const watcher = chokidar.watch(pathsToWatch, {
+            persistent: true,
+            ignoreInitial: true, // Don't fire on initial scan
+            awaitWriteFinish: {
+                stabilityThreshold: 500,
+                pollInterval: 100
+            }
+        });
+
+        watcher
+            .on('add', filePath => this.handlePluginManifestChange('add', filePath))
+            .on('change', filePath => this.handlePluginManifestChange('change', filePath))
+            .on('unlink', filePath => this.handlePluginManifestChange('unlink', filePath));
+            
+        console.log(`[PluginManager] Chokidar is now watching for manifest changes in: ${PLUGIN_DIR}`);
+    }
+
+    handlePluginManifestChange(eventType, filePath) {
+        if (this.isReloading) {
+            if (this.debugMode) console.log(`[PluginManager] Already reloading, skipping event '${eventType}' for: ${filePath}`);
+            return;
+        }
+        
+        clearTimeout(this.reloadTimeout);
+        
+        if (this.debugMode) console.log(`[PluginManager] Debouncing plugin reload trigger due to '${eventType}' event on: ${path.basename(filePath)}`);
+
+        this.reloadTimeout = setTimeout(async () => {
+            this.isReloading = true;
+            console.log(`[PluginManager] Manifest file change detected ('${eventType}'). Hot-reloading plugins...`);
+            
+            try {
+                await this.loadPlugins();
+                console.log('[PluginManager] Hot-reload complete.');
+
+                if (this.webSocketServer && typeof this.webSocketServer.broadcastToAdminPanel === 'function') {
+                    this.webSocketServer.broadcastToAdminPanel({
+                        type: 'plugins-reloaded',
+                        message: 'Plugin list has been updated due to file changes.'
+                    });
+                    if (this.debugMode) console.log('[PluginManager] Notified admin panel about plugin reload.');
+                }
+            } catch (error) {
+                console.error('[PluginManager] Error during hot-reload:', error);
+            } finally {
+                this.isReloading = false;
+            }
+        }, 500); // 500ms debounce window
     }
 }
 

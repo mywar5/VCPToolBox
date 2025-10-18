@@ -39,11 +39,30 @@ document.addEventListener('DOMContentLoaded', () => {
     const notesActionStatusSpan = document.getElementById('notes-action-status');
     const searchDailyNotesInput = document.getElementById('search-daily-notes'); // 新增：搜索框
 
-    // Agent Files Editor Elements
-    const agentFileSelect = document.getElementById('agent-file-select');
+    // RAG Tags Config Elements
+    const ragTagsConfigAreaDiv = document.getElementById('rag-tags-config-area');
+    const ragTagsFolderNameSpan = document.getElementById('rag-tags-folder-name');
+    const ragThresholdEnabledCheckbox = document.getElementById('rag-threshold-enabled');
+    const ragThresholdValueSlider = document.getElementById('rag-threshold-value');
+    const ragThresholdDisplaySpan = document.getElementById('rag-threshold-display');
+    const ragTagsContainer = document.getElementById('rag-tags-container');
+    const addRagTagButton = document.getElementById('add-rag-tag-button');
+    const saveRagTagsConfigButton = document.getElementById('save-rag-tags-config');
+    const ragTagsStatusSpan = document.getElementById('rag-tags-status');
+    
+    let ragTagsData = {}; // 存储所有的RAG-Tags配置
+    let currentRagFolder = null; // 当前选中的文件夹名称
+
+    // Agent Manager Elements
+    const agentMapListDiv = document.getElementById('agent-map-list');
+    const addAgentMapEntryButton = document.getElementById('add-agent-map-entry-button');
+    const saveAgentMapButton = document.getElementById('save-agent-map-button');
+    const agentMapStatusSpan = document.getElementById('agent-map-status');
+    const editingAgentFileDisplay = document.getElementById('editing-agent-file-display');
     const agentFileContentEditor = document.getElementById('agent-file-content-editor');
     const saveAgentFileButton = document.getElementById('save-agent-file-button');
     const agentFileStatusSpan = document.getElementById('agent-file-status');
+    const createAgentFileButton = document.getElementById('create-agent-file-button'); // 新增：创建文件按钮
 
     // TVS Files Editor Elements
     const tvsFileSelect = document.getElementById('tvs-file-select');
@@ -352,11 +371,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 li.classList.add('dynamic-plugin-nav-item'); // Add class for dynamic items
                 const a = document.createElement('a');
                 a.href = '#';
-                let displayName = plugin.manifest.displayName || plugin.manifest.name;
+                const originalName = plugin.manifest.name;
+                const displayName = plugin.manifest.displayName || originalName;
+                let nameHtml = displayName;
                 if (plugin.isDistributed) {
-                    displayName += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
+                    nameHtml += ` <span class="plugin-type-icon" title="分布式插件 (来自: ${plugin.serverId || '未知'})">☁️</span>`;
                 }
-                a.innerHTML = displayName; // Use innerHTML to render the span
+                nameHtml += `<br><span class="plugin-original-name">(${originalName})</span>`;
+                a.innerHTML = nameHtml; // Use innerHTML to render the span
                 a.dataset.target = `plugin-${plugin.manifest.name}-config`;
                 a.dataset.pluginName = plugin.manifest.name;
                 li.appendChild(a);
@@ -371,8 +393,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (plugin.isDistributed) descriptionHtml += ` (来自节点: ${plugin.serverId || '未知'})`;
                 if (!plugin.enabled) descriptionHtml += ' <span class="plugin-disabled-badge">(已禁用)</span>';
 
-
-                pluginSection.innerHTML = `<h2>${plugin.manifest.displayName || plugin.manifest.name} 配置 ${!plugin.enabled ? '<span class="plugin-disabled-badge-title">(已禁用)</span>':''} ${plugin.isDistributed ? '<span class="plugin-type-icon" title="分布式插件">☁️</span>' : ''}</h2>
+                let titleHtml = `${displayName} <span class="plugin-original-name">(${originalName})</span> 配置`;
+                if (!plugin.enabled) titleHtml += ' <span class="plugin-disabled-badge-title">(已禁用)</span>';
+                if (plugin.isDistributed) titleHtml += ' <span class="plugin-type-icon" title="分布式插件">☁️</span>';
+                
+                pluginSection.innerHTML = `<h2>${titleHtml}</h2>
                                            <p class="plugin-meta">${descriptionHtml}</p>`;
 
                 // Add a control area for plugin actions like toggle
@@ -711,7 +736,7 @@ Description Length: ${newDescription.length}`);
         
         // Rebuild the .env string from the form, preserving comments and order
         const currentPluginEntries = originalPluginConfigs[pluginName] || [];
-        const newConfigString = buildEnvStringForPlugin(form, currentPluginEntries);
+        const newConfigString = buildEnvStringForPlugin(form, currentPluginEntries, pluginName);
 
         try {
             await apiFetch(`${API_BASE_URL}/plugins/${pluginName}/config`, {
@@ -723,7 +748,7 @@ Description Length: ${newDescription.length}`);
         } catch (error) { /* Error handled by apiFetch */ }
     }
 
-    function buildEnvStringForPlugin(formElement, originalParsedEntries) {
+    function buildEnvStringForPlugin(formElement, originalParsedEntries, pluginName) {
         const finalLines = [];
         const editedKeysInForm = new Set();
 
@@ -957,7 +982,7 @@ Description Length: ${newDescription.length}`);
             } else if (sectionIdToActivate === 'daily-notes-manager-section') {
                 initializeDailyNotesManager();
             } else if (sectionIdToActivate === 'agent-files-editor-section') {
-                initializeAgentFilesEditor();
+                initializeAgentManager();
             } else if (sectionIdToActivate === 'tvs-files-editor-section') {
                 initializeTvsFilesEditor();
             } else if (sectionIdToActivate === 'server-log-viewer-section') {
@@ -971,11 +996,13 @@ Description Length: ${newDescription.length}`);
                 initializePreprocessorOrderManager();
           } else if (sectionIdToActivate === 'semantic-groups-editor-section') {
                initializeSemanticGroupsEditor();
+          } else if (sectionIdToActivate === 'thinking-chains-editor-section') {
+               initializeThinkingChainsEditor();
           }
-        } else {
-            console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
-        }
-    }
+       } else {
+           console.warn(`[navigateTo] Target section with ID '${sectionIdToActivate}' not found.`);
+       }
+   }
 
     pluginNavList.addEventListener('click', (event) => {
         const anchor = event.target.closest('a');
@@ -1255,15 +1282,18 @@ Description Length: ${newDescription.length}`);
     // --- Daily Notes Manager Functions ---
     let currentNotesFolder = null;
     let selectedNotes = new Set();
+    let easyMDE = null; // 用于存储EasyMDE实例
 
     async function initializeDailyNotesManager() {
         console.log('Initializing Daily Notes Manager...');
         notesListViewDiv.innerHTML = ''; // Clear previous notes
         noteEditorAreaDiv.style.display = 'none'; // Hide editor
+        ragTagsConfigAreaDiv.style.display = 'none'; // Hide RAG tags config area
         notesActionStatusSpan.textContent = '';
         moveSelectedNotesButton.disabled = true;
         if (deleteSelectedNotesButton) deleteSelectedNotesButton.disabled = true; // 新增：禁用删除按钮
         if (searchDailyNotesInput) searchDailyNotesInput.value = ''; // 清空搜索框
+        await loadRagTagsConfig(); // 加载RAG-Tags配置
         await loadNotesFolders();
         // Optionally, load notes from the first folder automatically or show a placeholder
     }
@@ -1338,6 +1368,10 @@ Description Length: ${newDescription.length}`);
             } else {
                 notesListViewDiv.innerHTML = `<p>文件夹 "${folderName}" 中没有日记。</p>`;
             }
+            
+            // 加载并显示该文件夹的RAG-Tags配置
+            displayRagTagsForFolder(folderName);
+            
         } catch (error) {
             notesListViewDiv.innerHTML = `<p>加载文件夹 "${folderName}" 中的日记失败。</p>`;
             showMessage(`加载日记失败: ${error.message}`, 'error');
@@ -1452,8 +1486,24 @@ Description Length: ${newDescription.length}`);
             const data = await apiFetch(`${API_BASE_URL}/dailynotes/note/${folderName}/${fileName}`);
             editingNoteFolderInput.value = folderName;
             editingNoteFileInput.value = fileName;
+            
+            // 销毁旧的EasyMDE实例（如果存在）
+            if (easyMDE) {
+                easyMDE.toTextArea();
+                easyMDE = null;
+            }
+            
             noteContentEditorTextarea.value = data.content;
             
+            // 初始化EasyMDE
+            easyMDE = new EasyMDE({
+                element: noteContentEditorTextarea,
+                spellChecker: false,
+                status: ['lines', 'words', 'cursor'],
+                minHeight: "500px",
+                maxHeight: "800px"
+            });
+
             document.getElementById('notes-list-view').style.display = 'none';
             document.querySelector('.notes-sidebar').style.display = 'none'; // Hide sidebar too
             document.querySelector('.notes-toolbar').style.display = 'none';
@@ -1468,7 +1518,7 @@ Description Length: ${newDescription.length}`);
     async function saveNoteChanges() {
         const folderName = editingNoteFolderInput.value;
         const fileName = editingNoteFileInput.value;
-        const content = noteContentEditorTextarea.value;
+        const content = easyMDE.value(); // 从EasyMDE获取内容
 
         if (!folderName || !fileName) {
             showMessage('无法保存日记，缺少文件信息。', 'error');
@@ -1492,6 +1542,11 @@ Description Length: ${newDescription.length}`);
     }
 
     function closeNoteEditor() {
+        // 销毁EasyMDE实例
+        if (easyMDE) {
+            easyMDE.toTextArea();
+            easyMDE = null;
+        }
         noteEditorAreaDiv.style.display = 'none';
         editingNoteFolderInput.value = '';
         editingNoteFileInput.value = '';
@@ -1582,6 +1637,157 @@ Description Length: ${newDescription.length}`);
     if (deleteSelectedNotesButton) deleteSelectedNotesButton.addEventListener('click', deleteSelectedNotesHandler); // 新增：删除按钮事件
     if (searchDailyNotesInput) searchDailyNotesInput.addEventListener('input', filterNotesBySearch);
 
+    // --- RAG Tags Config Functions ---
+    async function loadRagTagsConfig() {
+        try {
+            ragTagsData = await apiFetch(`${API_BASE_URL}/rag-tags`, {}, false);
+            console.log('[RAGTags] Loaded RAG-Tags config:', ragTagsData);
+        } catch (error) {
+            console.error('[RAGTags] Failed to load RAG-Tags config:', error);
+            ragTagsData = {};
+        }
+    }
+
+    function displayRagTagsForFolder(folderName) {
+        currentRagFolder = folderName;
+        ragTagsFolderNameSpan.textContent = folderName;
+        
+        const folderConfig = ragTagsData[folderName] || {};
+        const tags = folderConfig.tags || [];
+        const threshold = folderConfig.threshold;
+        
+        // 设置阈值
+        if (threshold !== undefined) {
+            ragThresholdEnabledCheckbox.checked = true;
+            ragThresholdValueSlider.value = threshold;
+            ragThresholdValueSlider.disabled = false;
+            ragThresholdDisplaySpan.textContent = threshold.toFixed(2);
+        } else {
+            ragThresholdEnabledCheckbox.checked = false;
+            ragThresholdValueSlider.value = 0.7;
+            ragThresholdValueSlider.disabled = true;
+            ragThresholdDisplaySpan.textContent = '0.70';
+        }
+        
+        // 清空并重新创建标签
+        ragTagsContainer.innerHTML = '';
+        tags.forEach((tagData) => {
+            const tagValue = typeof tagData === 'string' ? tagData : (tagData.tag || '');
+            addTagItem(tagValue);
+        });
+        
+        // 显示配置区域
+        ragTagsConfigAreaDiv.style.display = 'block';
+        ragTagsStatusSpan.textContent = '';
+    }
+
+    function addTagItem(value = '') {
+        const tagDiv = document.createElement('div');
+        tagDiv.className = 'tag-item';
+        
+        const tagInput = document.createElement('input');
+        tagInput.type = 'text';
+        tagInput.className = 'tag-input';
+        tagInput.value = value;
+        tagInput.placeholder = '标签:权重(可选)';
+        tagDiv.appendChild(tagInput);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-tag-btn';
+        deleteBtn.textContent = '×';
+        deleteBtn.onclick = () => tagDiv.remove();
+        tagDiv.appendChild(deleteBtn);
+
+        ragTagsContainer.appendChild(tagDiv);
+        if (!value) {
+            tagInput.focus();
+        }
+    }
+
+    async function saveRagTagsConfigHandler() {
+        if (!currentRagFolder) {
+            showMessage('未选中知识库文件夹', 'error');
+            return;
+        }
+
+        ragTagsStatusSpan.textContent = '保存中...';
+        ragTagsStatusSpan.className = 'status-message';
+
+        try {
+            // 构建当前文件夹的配置
+            const folderConfig = {};
+            
+            // 处理标签 - 从tag-item读取
+            const tagInputs = ragTagsContainer.querySelectorAll('.tag-input');
+            const tags = [];
+            tagInputs.forEach(input => {
+                const value = input.value.trim();
+                if (value) {
+                    tags.push(value);
+                }
+            });
+            folderConfig.tags = tags;
+            
+            // 处理阈值
+            if (ragThresholdEnabledCheckbox.checked) {
+                folderConfig.threshold = parseFloat(ragThresholdValueSlider.value);
+            }
+            
+            // 更新本地数据
+            if (folderConfig.tags.length > 0 || folderConfig.threshold !== undefined) {
+                ragTagsData[currentRagFolder] = folderConfig;
+            } else {
+                // 如果没有配置任何内容，则删除该条目
+                delete ragTagsData[currentRagFolder];
+            }
+            
+            // 保存到服务器
+            await apiFetch(`${API_BASE_URL}/rag-tags`, {
+                method: 'POST',
+                body: JSON.stringify(ragTagsData)
+            });
+
+            ragTagsStatusSpan.textContent = '✓ 保存成功';
+            ragTagsStatusSpan.className = 'status-message success';
+            showMessage('RAG-Tags配置已保存', 'success');
+            
+            // 3秒后清空状态
+            setTimeout(() => {
+                ragTagsStatusSpan.textContent = '';
+            }, 3000);
+
+        } catch (error) {
+            console.error('[RAGTags] Save failed:', error);
+            ragTagsStatusSpan.textContent = '✗ 保存失败';
+            ragTagsStatusSpan.className = 'status-message error';
+            showMessage(`保存RAG-Tags配置失败: ${error.message}`, 'error');
+        }
+    }
+
+    // RAG Tags 事件监听器
+    if (ragThresholdEnabledCheckbox) {
+        ragThresholdEnabledCheckbox.addEventListener('change', () => {
+            ragThresholdValueSlider.disabled = !ragThresholdEnabledCheckbox.checked;
+        });
+    }
+    
+    if (ragThresholdValueSlider) {
+        ragThresholdValueSlider.addEventListener('input', () => {
+            ragThresholdDisplaySpan.textContent = parseFloat(ragThresholdValueSlider.value).toFixed(2);
+        });
+    }
+    
+    if (addRagTagButton) {
+        addRagTagButton.addEventListener('click', () => {
+            addTagItem();
+        });
+    }
+    
+    if (saveRagTagsConfigButton) {
+        saveRagTagsConfigButton.addEventListener('click', saveRagTagsConfigHandler);
+    }
+    // --- End RAG Tags Config Functions ---
+
 
     // --- End Daily Notes Manager Functions ---
 
@@ -1647,59 +1853,128 @@ Description Length: ${newDescription.length}`);
     }
     // --- End New Function ---
 
-    // --- Agent Files Editor Functions ---
+    // --- Agent Manager Functions ---
     let currentEditingAgentFile = null;
+    let availableAgentFiles = []; // Cache available .txt files
 
-    async function initializeAgentFilesEditor() {
-        console.log('Initializing Agent Files Editor...');
+    async function initializeAgentManager() {
+        console.log('Initializing Agent Manager...');
         agentFileContentEditor.value = '';
         agentFileStatusSpan.textContent = '';
+        agentMapStatusSpan.textContent = '';
+        editingAgentFileDisplay.textContent = '未选择文件';
         saveAgentFileButton.disabled = true;
         currentEditingAgentFile = null;
-        await loadAgentFilesList();
+        agentMapListDiv.innerHTML = '<p>正在加载 Agent 映射...</p>';
+
+        try {
+            // Fetch both map and available files concurrently
+            const [mapData, filesData] = await Promise.all([
+                apiFetch(`${API_BASE_URL}/agents/map`),
+                apiFetch(`${API_BASE_URL}/agents`)
+            ]);
+            
+            availableAgentFiles = filesData.files.sort((a, b) => a.localeCompare(b));
+            renderAgentMap(mapData);
+
+        } catch (error) {
+            agentMapListDiv.innerHTML = `<p class="error-message">加载 Agent 数据失败: ${error.message}</p>`;
+            showMessage(`加载 Agent 数据失败: ${error.message}`, 'error');
+        }
     }
 
-    async function loadAgentFilesList() {
-        try {
-            const data = await apiFetch(`${API_BASE_URL}/agents`);
-            agentFileSelect.innerHTML = '<option value="">请选择一个文件...</option>'; // Reset
-            if (data.files && data.files.length > 0) {
-                data.files.sort((a, b) => a.localeCompare(b)); // Sort alphabetically
-                data.files.forEach(fileName => {
-                    const option = document.createElement('option');
-                    option.value = fileName;
-                    option.textContent = fileName;
-                    agentFileSelect.appendChild(option);
-                });
-            } else {
-                agentFileSelect.innerHTML = '<option value="">没有找到 Agent 文件</option>';
-                agentFileContentEditor.placeholder = '没有 Agent 文件可供编辑。';
-            }
-        } catch (error) {
-            agentFileSelect.innerHTML = '<option value="">加载 Agent 文件列表失败</option>';
-            showMessage('加载 Agent 文件列表失败: ' + error.message, 'error');
-            agentFileContentEditor.placeholder = '加载 Agent 文件列表失败。';
+    function renderAgentMap(agentMap) {
+        agentMapListDiv.innerHTML = ''; // Clear loading message
+        if (Object.keys(agentMap).length === 0) {
+            agentMapListDiv.innerHTML = '<p>没有定义任何 Agent。请点击“添加新 Agent”来创建一个。</p>';
         }
+
+        for (const agentName in agentMap) {
+            const fileName = agentMap[agentName];
+            const entryDiv = createAgentMapEntryElement(agentName, fileName);
+            agentMapListDiv.appendChild(entryDiv);
+        }
+    }
+
+    function createAgentMapEntryElement(agentName, selectedFile) {
+        const entryDiv = document.createElement('div');
+        entryDiv.className = 'agent-map-entry';
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = agentName;
+        nameInput.className = 'agent-name-input';
+        nameInput.placeholder = 'Agent 定义名';
+
+        const fileSelect = document.createElement('select');
+        fileSelect.className = 'agent-file-select';
+        
+        const placeholderOption = document.createElement('option');
+        placeholderOption.value = '';
+        placeholderOption.textContent = '选择一个 .txt 文件...';
+        fileSelect.appendChild(placeholderOption);
+
+        availableAgentFiles.forEach(f => {
+            const option = document.createElement('option');
+            option.value = f;
+            option.textContent = f;
+            if (f === selectedFile) {
+                option.selected = true;
+            }
+            fileSelect.appendChild(option);
+        });
+
+        const editFileButton = document.createElement('button');
+        editFileButton.textContent = '编辑文件';
+        editFileButton.className = 'edit-agent-file-btn';
+        editFileButton.onclick = () => {
+            const selectedValue = fileSelect.value;
+            if (selectedValue) {
+                loadAgentFileContent(selectedValue);
+            } else {
+                showMessage('请先为此 Agent 选择一个文件。', 'info');
+            }
+        };
+
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = '删除';
+        deleteButton.className = 'delete-agent-map-btn';
+        deleteButton.onclick = () => {
+            if (confirm(`确定要删除 Agent "${nameInput.value || '(未命名)'}" 吗？`)) {
+                entryDiv.remove();
+            }
+        };
+
+        entryDiv.appendChild(nameInput);
+        entryDiv.appendChild(document.createTextNode(' → '));
+        entryDiv.appendChild(fileSelect);
+        entryDiv.appendChild(editFileButton);
+        entryDiv.appendChild(deleteButton);
+
+        return entryDiv;
     }
 
     async function loadAgentFileContent(fileName) {
         if (!fileName) {
             agentFileContentEditor.value = '';
-            agentFileStatusSpan.textContent = '请选择一个文件。';
+            agentFileStatusSpan.textContent = '';
+            editingAgentFileDisplay.textContent = '未选择文件';
             saveAgentFileButton.disabled = true;
             currentEditingAgentFile = null;
-            agentFileContentEditor.placeholder = '选择一个 Agent 文件以编辑其内容...';
+            agentFileContentEditor.placeholder = '从左侧选择一个 Agent 以编辑其关联的 .txt 文件...';
             return;
         }
         agentFileStatusSpan.textContent = `正在加载 ${fileName}...`;
         try {
             const data = await apiFetch(`${API_BASE_URL}/agents/${fileName}`);
             agentFileContentEditor.value = data.content;
-            agentFileStatusSpan.textContent = `当前编辑: ${fileName}`;
+            agentFileStatusSpan.textContent = ``; // Clear loading message
+            editingAgentFileDisplay.textContent = `正在编辑: ${fileName}`;
             saveAgentFileButton.disabled = false;
             currentEditingAgentFile = fileName;
         } catch (error) {
             agentFileStatusSpan.textContent = `加载文件 ${fileName} 失败。`;
+            editingAgentFileDisplay.textContent = `加载失败: ${fileName}`;
             showMessage(`加载文件 ${fileName} 失败: ${error.message}`, 'error');
             agentFileContentEditor.value = `无法加载文件: ${fileName}\n\n错误: ${error.message}`;
             saveAgentFileButton.disabled = true;
@@ -1731,17 +2006,126 @@ Description Length: ${newDescription.length}`);
         }
     }
 
-    // Event Listeners for Agent Files Editor
-    if (agentFileSelect) {
-        agentFileSelect.addEventListener('change', (event) => {
-            loadAgentFileContent(event.target.value);
+    async function saveAgentMap() {
+        agentMapStatusSpan.textContent = '正在保存...';
+        agentMapStatusSpan.className = 'status-message info';
+        const newMap = {};
+        let isValid = true;
+
+        agentMapListDiv.querySelectorAll('.agent-map-entry').forEach(entry => {
+            const nameInput = entry.querySelector('.agent-name-input');
+            const fileSelect = entry.querySelector('.agent-file-select');
+            const agentName = nameInput.value.trim();
+            const fileName = fileSelect.value;
+
+            if (!agentName) {
+                showMessage('Agent 定义名不能为空。', 'error');
+                nameInput.focus();
+                isValid = false;
+                return;
+            }
+            if (newMap[agentName]) {
+                showMessage(`Agent 定义名 "${agentName}" 重复。`, 'error');
+                nameInput.focus();
+                isValid = false;
+                return;
+            }
+            if (!fileName) {
+                showMessage(`Agent "${agentName}" 未选择 .txt 文件。`, 'error');
+                fileSelect.focus();
+                isValid = false;
+                return;
+            }
+            newMap[agentName] = fileName;
         });
+
+        if (!isValid) {
+            agentMapStatusSpan.textContent = '保存失败，请检查错误。';
+            agentMapStatusSpan.className = 'status-message error';
+            return;
+        }
+
+        try {
+            await apiFetch(`${API_BASE_URL}/agents/map`, {
+                method: 'POST',
+                body: JSON.stringify(newMap)
+            });
+            showMessage('Agent 映射表已成功保存!', 'success');
+            agentMapStatusSpan.textContent = '保存成功!';
+            agentMapStatusSpan.className = 'status-message success';
+            // Reload to ensure consistency
+            initializeAgentManager();
+        } catch (error) {
+            agentMapStatusSpan.textContent = `保存失败: ${error.message}`;
+            agentMapStatusSpan.className = 'status-message error';
+        }
     }
+
+    function addNewAgentMapEntry() {
+        const entryDiv = createAgentMapEntryElement('', '');
+        agentMapListDiv.appendChild(entryDiv);
+        entryDiv.querySelector('.agent-name-input').focus();
+    }
+
+    async function createNewAgentFileHandler() {
+        let fileName = prompt("请输入要创建的新 .txt 文件名（无需包含 .txt 后缀）:", "");
+        if (!fileName || !fileName.trim()) {
+            showMessage('文件名不能为空。', 'info');
+            return;
+        }
+
+        // 标准化文件名：如果用户添加了.txt，则删除它，然后再添加回来以确保格式正确。
+        fileName = fileName.trim().replace(/\.txt$/i, '');
+        const finalFileName = `${fileName}.txt`;
+
+        if (availableAgentFiles.includes(finalFileName)) {
+            showMessage(`文件 "${finalFileName}" 已存在。`, 'error');
+            return;
+        }
+
+        if (!confirm(`确定要创建新的 Agent 文件 "${finalFileName}" 吗？`)) {
+            return;
+        }
+
+        agentMapStatusSpan.textContent = `正在创建文件 ${finalFileName}...`;
+        agentMapStatusSpan.className = 'status-message info';
+
+        try {
+            // 注意：这假设服务器上已创建新的 API 端点 POST /admin_api/agents/new-file
+            await apiFetch(`${API_BASE_URL}/agents/new-file`, {
+                method: 'POST',
+                body: JSON.stringify({ fileName: finalFileName })
+            });
+            showMessage(`文件 "${finalFileName}" 已成功创建!`, 'success');
+            agentMapStatusSpan.textContent = '文件创建成功!';
+            agentMapStatusSpan.className = 'status-message success';
+            
+            // 刷新整个 agent 管理器以在列表中获取新文件
+            await initializeAgentManager();
+
+        } catch (error) {
+            agentMapStatusSpan.textContent = `创建文件失败: ${error.message}`;
+            agentMapStatusSpan.className = 'status-message error';
+            // showMessage 由 apiFetch 处理
+        }
+    }
+
+
+    // Event Listeners for Agent Manager
     if (saveAgentFileButton) {
         saveAgentFileButton.addEventListener('click', saveAgentFileContent);
     }
+    if (saveAgentMapButton) {
+        saveAgentMapButton.addEventListener('click', saveAgentMap);
+    }
+    if (addAgentMapEntryButton) {
+        addAgentMapEntryButton.addEventListener('click', addNewAgentMapEntry);
+    }
+    if (createAgentFileButton) {
+        createAgentFileButton.addEventListener('click', createNewAgentFileHandler);
+    }
 
-    // --- End Agent Files Editor Functions ---
+    // --- End Agent Manager Functions ---
 
     // --- TVS Files Editor Functions ---
     let currentEditingTvsFile = null;
@@ -2289,4 +2673,301 @@ Description Length: ${newDescription.length}`);
         addSemanticGroupButton.addEventListener('click', addNewSemanticGroup);
     }
     // --- End Semantic Groups Editor Functions ---
+
+    // --- Thinking Chains Editor Functions ---
+    let thinkingChainsData = {};
+    let availableClusters = [];
+
+    async function initializeThinkingChainsEditor() {
+        console.log('Initializing Thinking Chains Editor...');
+        const container = document.getElementById('thinking-chains-container');
+        const statusSpan = document.getElementById('thinking-chains-status');
+        if (!container || !statusSpan) return;
+
+        container.innerHTML = '<p>正在加载思维链配置...</p>';
+        statusSpan.textContent = '';
+        try {
+            // Fetch both chains and available clusters concurrently
+            const [chainsResponse, clustersResponse] = await Promise.all([
+                apiFetch(`${API_BASE_URL}/thinking-chains`),
+                apiFetch(`${API_BASE_URL}/available-clusters`)
+            ]);
+            
+            thinkingChainsData = chainsResponse;
+            availableClusters = clustersResponse.clusters || [];
+            
+            renderThinkingChainsEditor(container);
+
+        } catch (error) {
+            container.innerHTML = `<p class="error-message">加载思维链配置失败: ${error.message}</p>`;
+        }
+    }
+
+    function renderThinkingChainsEditor(container) {
+        container.innerHTML = '';
+        const themes = thinkingChainsData.chains || {};
+
+        const editorWrapper = document.createElement('div');
+        editorWrapper.className = 'thinking-chains-editor-wrapper';
+
+        const themesContainer = document.createElement('div');
+        themesContainer.id = 'thinking-chains-themes-container'; // Add ID for easy access
+        themesContainer.className = 'thinking-chains-themes-container';
+
+        if (Object.keys(themes).length === 0) {
+            themesContainer.innerHTML = '<p>没有找到任何思维链主题。请点击“添加新主题”来创建一个。</p>';
+        } else {
+            for (const themeName in themes) {
+                const themeElement = createThemeElement(themeName, themes[themeName]);
+                themesContainer.appendChild(themeElement);
+            }
+        }
+
+        const availableClustersElement = createAvailableClustersElement();
+
+        editorWrapper.appendChild(themesContainer);
+        editorWrapper.appendChild(availableClustersElement);
+        container.appendChild(editorWrapper);
+    }
+
+    function createThemeElement(themeName, chain) {
+        const details = document.createElement('details');
+        details.className = 'theme-details';
+        details.open = true;
+        details.dataset.themeName = themeName;
+
+        const summary = document.createElement('summary');
+        summary.className = 'theme-summary';
+        
+        const themeNameSpan = document.createElement('span');
+        themeNameSpan.className = 'theme-name-display';
+        themeNameSpan.textContent = `主题: ${themeName}`;
+        summary.appendChild(themeNameSpan);
+
+        const deleteThemeBtn = document.createElement('button');
+        deleteThemeBtn.textContent = '删除该主题';
+        deleteThemeBtn.className = 'delete-theme-btn';
+        deleteThemeBtn.onclick = (e) => {
+            e.preventDefault();
+            if (confirm(`确定要删除主题 "${themeName}" 吗？`)) {
+                details.remove();
+            }
+        };
+        summary.appendChild(deleteThemeBtn);
+        details.appendChild(summary);
+
+        const content = document.createElement('div');
+        content.className = 'theme-content';
+        
+        const chainList = document.createElement('ul');
+        chainList.className = 'draggable-list theme-chain-list';
+        chainList.dataset.themeName = themeName;
+
+        if (chain.length > 0) {
+            chain.forEach(clusterName => {
+                const listItem = createChainItemElement(clusterName);
+                chainList.appendChild(listItem);
+            });
+        } else {
+            // Add a placeholder to make empty lists a valid drop target
+            const placeholder = document.createElement('li');
+            placeholder.className = 'drop-placeholder';
+            placeholder.textContent = '将思维簇拖拽到此处';
+            chainList.appendChild(placeholder);
+        }
+
+        content.appendChild(chainList);
+        details.appendChild(content);
+
+        // Add drag and drop functionality to the list
+        setupDragAndDrop(chainList);
+
+        return details;
+    }
+
+    function createChainItemElement(clusterName) {
+        const li = document.createElement('li');
+        li.className = 'chain-item';
+        li.draggable = true;
+        li.dataset.clusterName = clusterName;
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'cluster-name';
+        nameSpan.textContent = clusterName;
+        li.appendChild(nameSpan);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = '×';
+        removeBtn.className = 'remove-cluster-btn';
+        removeBtn.onclick = () => li.remove();
+        li.appendChild(removeBtn);
+        
+        // Add drag listeners to the item itself
+        li.addEventListener('dragstart', (e) => {
+            e.dataTransfer.setData('text/plain', clusterName);
+            e.dataTransfer.effectAllowed = 'move';
+            setTimeout(() => li.classList.add('dragging'), 0);
+        });
+        li.addEventListener('dragend', () => li.classList.remove('dragging'));
+
+        return li;
+    }
+
+    function createAvailableClustersElement() {
+        const container = document.createElement('div');
+        container.className = 'available-clusters-container';
+
+        const title = document.createElement('h3');
+        title.textContent = '可用的思维簇模块';
+        container.appendChild(title);
+        
+        const p = document.createElement('p');
+        p.className = 'description';
+        p.textContent = '将模块从这里拖拽到左侧的主题列表中。';
+        container.appendChild(p);
+
+        const list = document.createElement('ul');
+        list.className = 'draggable-list available-clusters-list';
+
+        availableClusters.forEach(clusterName => {
+            const listItem = createChainItemElement(clusterName);
+            // Make it a template for dragging, not a removable item
+            listItem.querySelector('.remove-cluster-btn').remove();
+            list.appendChild(listItem);
+        });
+
+        container.appendChild(list);
+        return container;
+    }
+
+    function setupDragAndDrop(listElement) {
+        listElement.addEventListener('dragover', e => {
+            e.preventDefault();
+            const afterElement = getDragAfterElement(listElement, e.clientY);
+            const dragging = document.querySelector('.dragging');
+            if (dragging) {
+                if (afterElement == null) {
+                    listElement.appendChild(dragging);
+                } else {
+                    listElement.insertBefore(dragging, afterElement);
+                }
+            }
+        });
+
+        listElement.addEventListener('drop', e => {
+            e.preventDefault();
+            const clusterName = e.dataTransfer.getData('text/plain');
+            const dragging = document.querySelector('.dragging'); // This is the placeholder moved by dragover
+
+            if (!dragging) return;
+
+            const isFromAvailable = !dragging.querySelector('.remove-cluster-btn');
+
+            if (isFromAvailable) {
+                // It's a new item from the available list.
+                
+                // Remove placeholder for empty lists if it exists
+                const placeholder = listElement.querySelector('.drop-placeholder');
+                if (placeholder) placeholder.remove();
+
+                // Check for duplicates, ignoring the placeholder ('dragging') itself
+                const alreadyExists = Array.from(listElement.querySelectorAll('.chain-item'))
+                                         .filter(item => item !== dragging)
+                                         .some(item => item.dataset.clusterName === clusterName);
+
+                if (clusterName && !alreadyExists) {
+                    const newItem = createChainItemElement(clusterName);
+                    // Replace the placeholder ('dragging') with the new item
+                    listElement.replaceChild(newItem, dragging);
+                } else {
+                    // If it's a duplicate or invalid, just remove the placeholder
+                    dragging.remove();
+                }
+
+                // Restore the available clusters list to fix the "consumed" bug
+                const editorContainer = document.getElementById('thinking-chains-container');
+                const oldAvailableContainer = editorContainer.querySelector('.available-clusters-container');
+                if (oldAvailableContainer) {
+                    const newAvailableContainer = createAvailableClustersElement();
+                    oldAvailableContainer.replaceWith(newAvailableContainer);
+                }
+            }
+            // If it's a reorder, 'dragover' already moved it, and we're done.
+        });
+    }
+
+    async function saveThinkingChains() {
+        const container = document.getElementById('thinking-chains-container');
+        const statusSpan = document.getElementById('thinking-chains-status');
+        if (!container || !statusSpan) return;
+
+        const newChains = {};
+        const themeElements = container.querySelectorAll('.theme-details');
+
+        themeElements.forEach(el => {
+            const themeName = el.dataset.themeName;
+            const clusters = [];
+            el.querySelectorAll('.chain-item').forEach(item => {
+                clusters.push(item.dataset.clusterName);
+            });
+            newChains[themeName] = clusters;
+        });
+
+        const dataToSave = {
+            ...thinkingChainsData, // Preserve other top-level keys like description, version
+            chains: newChains
+        };
+
+        statusSpan.textContent = '正在保存...';
+        statusSpan.className = 'status-message info';
+        try {
+            await apiFetch(`${API_BASE_URL}/thinking-chains`, {
+                method: 'POST',
+                body: JSON.stringify(dataToSave)
+            });
+            showMessage('思维链配置已成功保存!', 'success');
+            statusSpan.textContent = '保存成功!';
+            statusSpan.className = 'status-message success';
+            // Reload to ensure UI is consistent with saved data
+            initializeThinkingChainsEditor();
+        } catch (error) {
+            statusSpan.textContent = `保存失败: ${error.message}`;
+            statusSpan.className = 'status-message error';
+        }
+    }
+
+    function addNewThinkingChainTheme() {
+        const themeName = prompt('请输入新思维链主题的名称 (例如: creative-writing):');
+        if (!themeName || !themeName.trim()) return;
+
+        const normalizedThemeName = themeName.trim();
+        const container = document.getElementById('thinking-chains-themes-container');
+        if (!container) return;
+
+        if (container.querySelector(`[data-theme-name="${normalizedThemeName}"]`)) {
+            showMessage(`主题 "${normalizedThemeName}" 已存在!`, 'error');
+            return;
+        }
+        
+        if (!container.querySelector('.theme-details')) {
+            container.innerHTML = '';
+        }
+
+        const newThemeElement = createThemeElement(normalizedThemeName, []);
+        container.appendChild(newThemeElement);
+        newThemeElement.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // Event Listeners for Thinking Chains Editor
+    const saveThinkingChainsButton = document.getElementById('save-thinking-chains-button');
+    const addThinkingChainThemeButton = document.getElementById('add-thinking-chain-theme-button');
+
+    if (saveThinkingChainsButton) {
+        saveThinkingChainsButton.addEventListener('click', saveThinkingChains);
+    }
+    if (addThinkingChainThemeButton) {
+        addThinkingChainThemeButton.addEventListener('click', addNewThinkingChainTheme);
+    }
+    // --- End Thinking Chains Editor Functions ---
     });
+

@@ -14,6 +14,7 @@ const clients = new Map(); // VCPLog 等普通客户端
 const distributedServers = new Map(); // 分布式服务器客户端
 const chromeControlClients = new Map(); // ChromeControl 客户端
 const chromeObserverClients = new Map(); // 新增：ChromeObserver 客户端
+const adminPanelClients = new Map(); // 新增：管理面板客户端
 const pendingToolRequests = new Map(); // 跨服务器工具调用的待处理请求
 const distributedServerIPs = new Map(); // 新增：存储分布式服务器的IP信息
 
@@ -48,14 +49,18 @@ function initialize(httpServer, config) {
         const pathname = parsedUrl.pathname;
 
         const vcpLogPathRegex = /^\/VCPlog\/VCP_Key=(.+)$/;
+        const vcpInfoPathRegex = /^\/vcpinfo\/VCP_Key=(.+)$/; // 新增：VCPInfo 通道
         const distServerPathRegex = /^\/vcp-distributed-server\/VCP_Key=(.+)$/;
         const chromeControlPathRegex = /^\/vcp-chrome-control\/VCP_Key=(.+)$/;
         const chromeObserverPathRegex = /^\/vcp-chrome-observer\/VCP_Key=(.+)$/;
+        const adminPanelPathRegex = /^\/vcp-admin-panel\/VCP_Key=(.+)$/; // 新增
 
         const vcpMatch = pathname.match(vcpLogPathRegex);
+        const vcpInfoMatch = pathname.match(vcpInfoPathRegex); // 新增匹配
         const distMatch = pathname.match(distServerPathRegex);
         const chromeControlMatch = pathname.match(chromeControlPathRegex);
         const chromeObserverMatch = pathname.match(chromeObserverPathRegex);
+        const adminPanelMatch = pathname.match(adminPanelPathRegex); // 新增
 
         let isAuthenticated = false;
         let clientType = null;
@@ -65,6 +70,10 @@ function initialize(httpServer, config) {
             clientType = 'VCPLog';
             connectionKey = vcpMatch[1];
             writeLog(`VCPLog client attempting to connect.`);
+        } else if (vcpInfoMatch && vcpInfoMatch[1]) { // 新增 VCPInfo 客户端处理
+            clientType = 'VCPInfo';
+            connectionKey = vcpInfoMatch[1];
+            writeLog(`VCPInfo client attempting to connect.`);
         } else if (distMatch && distMatch[1]) {
             clientType = 'DistributedServer';
             connectionKey = distMatch[1];
@@ -77,6 +86,10 @@ function initialize(httpServer, config) {
            clientType = 'ChromeControl';
            connectionKey = chromeControlMatch[1];
            writeLog(`Temporary ChromeControl client attempting to connect.`);
+        } else if (adminPanelMatch && adminPanelMatch[1]) {
+            clientType = 'AdminPanel';
+            connectionKey = adminPanelMatch[1];
+            writeLog(`Admin Panel client attempting to connect.`);
         } else {
             writeLog(`WebSocket upgrade request for unhandled path: ${pathname}. Ignoring.`);
             socket.destroy();
@@ -117,6 +130,9 @@ function initialize(httpServer, config) {
                 } else if (clientType === 'ChromeControl') {
                    chromeControlClients.set(clientId, ws);
                    writeLog(`Temporary ChromeControl client ${clientId} connected.`);
+                } else if (clientType === 'AdminPanel') {
+                   adminPanelClients.set(clientId, ws);
+                   writeLog(`Admin Panel client ${clientId} connected.`);
                 } else {
                     clients.set(clientId, ws);
                     writeLog(`Client ${clientId} (Type: ${clientType}) authenticated and connected.`);
@@ -135,6 +151,8 @@ function initialize(httpServer, config) {
         // 发送连接确认消息给特定类型的客户端
         if (ws.clientType === 'VCPLog') {
             ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPLog.' }));
+        } else if (ws.clientType === 'VCPInfo') { // 新增 VCPInfo 确认消息
+            ws.send(JSON.stringify({ type: 'connection_ack', message: 'WebSocket connection successful for VCPInfo.' }));
         }
         // 可以根据 ws.clientType 或其他标识符发送不同的欢迎消息
 
@@ -149,8 +167,14 @@ function initialize(httpServer, config) {
                 if (ws.clientType === 'DistributedServer') {
                     handleDistributedServerMessage(ws.serverId, parsedMessage);
                 } else if (ws.clientType === 'ChromeObserver') {
-                    // 如果是命令结果，则将其路由回原始的ChromeControl客户端
-                    if (parsedMessage.type === 'command_result' && parsedMessage.data && parsedMessage.data.sourceClientId) {
+                    if (parsedMessage.type === 'heartbeat') {
+                        // 收到心跳包，发送确认
+                        ws.send(JSON.stringify({ type: 'heartbeat_ack', timestamp: Date.now() }));
+                        if (serverConfig.debugMode) {
+                            console.log(`[WebSocketServer] Received heartbeat from ChromeObserver client ${ws.clientId}, sent ack.`);
+                        }
+                    } else if (parsedMessage.type === 'command_result' && parsedMessage.data && parsedMessage.data.sourceClientId) {
+                        // 如果是命令结果，则将其路由回原始的ChromeControl客户端
                         const sourceClientId = parsedMessage.data.sourceClientId;
                         
                         // 为ChromeControl客户端重新构建消息
@@ -178,7 +202,7 @@ function initialize(httpServer, config) {
                     const chromeObserverModule = pluginManager.getServiceModule('ChromeObserver');
                     if (chromeObserverModule && typeof chromeObserverModule.handleClientMessage === 'function') {
                         // 避免将命令结果再次传递给状态处理器
-                        if (parsedMessage.type !== 'command_result') {
+                        if (parsedMessage.type !== 'command_result' && parsedMessage.type !== 'heartbeat') {
                             chromeObserverModule.handleClientMessage(ws.clientId, parsedMessage);
                         }
                     }
@@ -217,6 +241,9 @@ function initialize(httpServer, config) {
            } else if (ws.clientType === 'ChromeControl') {
               chromeControlClients.delete(ws.clientId);
               writeLog(`ChromeControl client ${ws.clientId} disconnected and removed.`);
+           } else if (ws.clientType === 'AdminPanel') {
+              adminPanelClients.delete(ws.clientId);
+              writeLog(`Admin Panel client ${ws.clientId} disconnected and removed.`);
            } else {
                clients.delete(ws.clientId);
            }
@@ -256,6 +283,11 @@ function broadcast(data, targetClientType = null) {
         }
     });
     writeLog(`Broadcasted (Target: ${targetClientType || 'All'}): ${messageString.substring(0, 200)}...`);
+}
+
+// 新增：专门广播给 VCPInfo 客户端
+function broadcastVCPInfo(data) {
+    broadcast(data, 'VCPInfo');
 }
 
 // 发送给特定客户端
@@ -420,12 +452,30 @@ function findServerByIp(ip) {
    return null;
 }
 
+// 新增：专门广播给管理面板
+function broadcastToAdminPanel(data) {
+    if (!wssInstance) return;
+    const messageString = JSON.stringify(data);
+    
+    adminPanelClients.forEach(clientWs => {
+        if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send(messageString);
+        }
+    });
+    if (serverConfig.debugMode) {
+        writeLog(`Broadcasted to Admin Panel: ${messageString.substring(0, 200)}...`);
+    }
+}
+
 module.exports = {
     initialize,
     setPluginManager,
     broadcast,
+    broadcastVCPInfo, // 导出新的广播函数
+    broadcastToAdminPanel, // 导出给管理面板的广播函数
     sendMessageToClient,
     executeDistributedTool,
     findServerByIp,
     shutdown
+
 };

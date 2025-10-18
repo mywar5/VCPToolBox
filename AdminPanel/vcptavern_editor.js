@@ -66,10 +66,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const card = document.createElement('div');
         card.className = 'rule-card';
         card.dataset.id = ruleId;
-        card.draggable = true;
 
         card.innerHTML = `
             <div class="rule-header">
+                <div class="drag-handle" title="拖拽移动">⋮⋮</div>
                 <h3 contenteditable="true">${rule.name || '新规则'}</h3>
                 <div class="rule-controls">
                     <button class="toggle-rule" title="启用/禁用">${rule.enabled ? '🟢' : '🔴'}</button>
@@ -139,30 +139,32 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Drag and Drop
+        const dragHandle = card.querySelector('.drag-handle');
+
+        // 拖拽事件应该绑定在卡片上，而不是手柄上
         card.addEventListener('dragstart', (e) => {
-            draggedItem = e.target.closest('.rule-card');
-            setTimeout(() => {
-                draggedItem.classList.add('dragging');
-            }, 0);
+            draggedItem = card;
+            // 使用微任务延迟添加class，确保拖拽的视觉反馈正确
+            setTimeout(() => card.classList.add('dragging'), 0);
         });
 
         card.addEventListener('dragend', (e) => {
-            setTimeout(() => {
-                if(draggedItem) {
-                    draggedItem.classList.remove('dragging');
-                    draggedItem = null;
-                }
-            }, 0);
+            // 拖拽结束后清理
+            if (draggedItem) {
+                draggedItem.classList.remove('dragging');
+            }
+            draggedItem = null;
+            // 确保拖拽结束后，卡片恢复不可拖拽状态
+            card.draggable = false;
         });
 
-        rulesList.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            const afterElement = getDragAfterElement(rulesList, e.clientY);
-            const currentDragged = document.querySelector('.dragging');
-            if (afterElement == null) {
-                rulesList.appendChild(currentDragged);
+        // 使用 mousedown 来控制是否启用拖拽，这是正确的
+        card.addEventListener('mousedown', (e) => {
+            // 只在点击拖拽手柄时才允许拖拽
+            if (e.target === dragHandle) {
+                card.draggable = true;
             } else {
-                rulesList.insertBefore(currentDragged, afterElement);
+                card.draggable = false;
             }
         });
 
@@ -287,6 +289,20 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error('保存预设失败:', error);
             alert('保存预设失败!');
+        }
+    });
+
+    // --- Drag and Drop Logic for the list ---
+    rulesList.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const afterElement = getDragAfterElement(rulesList, e.clientY);
+        const currentDragged = document.querySelector('.dragging');
+        if (!currentDragged) return; // Guard against errors
+
+        if (afterElement == null) {
+            rulesList.appendChild(currentDragged);
+        } else {
+            rulesList.insertBefore(currentDragged, afterElement);
         }
     });
 
