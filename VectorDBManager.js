@@ -13,6 +13,7 @@ const DIARY_ROOT_PATH = path.join(__dirname, 'dailynote'); // Your diary root di
 const VECTOR_STORE_PATH = path.join(__dirname, 'VectorStore'); // Directory to store vector indices
 const MANIFEST_PATH = path.join(VECTOR_STORE_PATH, 'manifest.json'); // Path for the manifest file
 const USAGE_STATS_PATH = path.join(VECTOR_STORE_PATH, 'usage_stats.json'); // Usage statistics
+const DIARY_NAME_VECTOR_CACHE_PATH = path.join(VECTOR_STORE_PATH, 'diary_name_vectors.json'); // Path for the diary name vector cache
 
 /**
  * LRU Cache with TTL for search results
@@ -28,7 +29,7 @@ class SearchCache {
 
     getCacheKey(diaryName, queryVector, k) {
         const vectorHash = crypto.createHash('md5')
-            .update(Buffer.from(queryVector))
+            .update(JSON.stringify(queryVector))
             .digest('hex');
         return `${diaryName}-${vectorHash}-${k}`;
     }
@@ -100,6 +101,7 @@ class VectorDBManager {
         this.activeWorkers = new Set();
         this.lruCache = new Map();
         this.manifest = {};
+        this.diaryNameVectors = new Map(); // 新增：缓存日记本名称的向量
         this.searchCache = new SearchCache(this.config.cacheSize, this.config.cacheTTL);
         this.searchWorkerPool = new WorkerPool(path.resolve(__dirname, 'vectorSearchWorker.js'));
 
@@ -161,6 +163,7 @@ class VectorDBManager {
         await fs.mkdir(VECTOR_STORE_PATH, { recursive: true });
         await this.loadManifest();
         await this.scanAndSyncAll();
+        await this.cacheDiaryNameVectors(); // 新增：缓存日记本名称向量
         await this.preWarmIndices();
         this.watchDiaries();
         console.log('[VectorDB] Initialization complete. Now monitoring diary files for changes.');
@@ -474,6 +477,8 @@ class VectorDBManager {
                 return;
             }
             this.scheduleDiaryBookProcessing(diaryName);
+            // 触发日记本名称向量的重新缓存
+            this.cacheDiaryNameVectors();
         };
 
         // ✅ 处理目录删除
@@ -487,6 +492,8 @@ class VectorDBManager {
             this.cleanupDeletedDiary(diaryName).catch(err => {
                 console.error(`[VectorDB] Error cleaning up deleted directory "${diaryName}":`, err);
             });
+            // 触发日记本名称向量的重新缓存
+            this.cacheDiaryNameVectors();
         };
 
         watcher
@@ -732,6 +739,108 @@ class VectorDBManager {
         }
     }
 
+    /**
+     * 从文件加载日记本名称向量缓存
+     */
+    async loadDiaryNameVectors() {
+        try {
+            const data = await fs.readFile(DIARY_NAME_VECTOR_CACHE_PATH, 'utf-8');
+            const entries = JSON.parse(data);
+            this.diaryNameVectors = new Map(entries);
+            console.log(`[VectorDB] Loaded ${this.diaryNameVectors.size} diary name vectors from cache.`);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                console.log('[VectorDB] Diary name vector cache not found. Will create a new one.');
+                this.diaryNameVectors = new Map();
+            } else {
+                console.error('[VectorDB] Failed to load diary name vector cache:', error);
+                this.diaryNameVectors = new Map();
+            }
+        }
+    }
+
+    /**
+     * 保存日记本名称向量缓存到文件
+     */
+    async saveDiaryNameVectors() {
+        try {
+            const data = JSON.stringify(Array.from(this.diaryNameVectors.entries()));
+            await fs.writeFile(DIARY_NAME_VECTOR_CACHE_PATH, data);
+        } catch (error) {
+            console.error('[VectorDB] Failed to save diary name vector cache:', error);
+        }
+    }
+
+    /**
+     * 同步并缓存所有日记本名称的向量（增量更新）
+     */
+    async cacheDiaryNameVectors() {
+        console.log('[VectorDB] Starting to sync diary book name vectors...');
+        await this.loadDiaryNameVectors(); // 首先加载现有缓存
+
+        const diaryBooks = await fs.readdir(DIARY_ROOT_PATH, { withFileTypes: true });
+        const currentDiaryNames = new Set();
+        for (const dirent of diaryBooks) {
+            if (dirent.isDirectory() && !dirent.name.startsWith('已整理')) {
+                currentDiaryNames.add(dirent.name);
+            }
+        }
+
+        const cachedNames = new Set(this.diaryNameVectors.keys());
+        let hasChanges = false;
+
+        // 检查已删除的日记本
+        for (const cachedName of cachedNames) {
+            if (!currentDiaryNames.has(cachedName)) {
+                this.diaryNameVectors.delete(cachedName);
+                hasChanges = true;
+                console.log(`[VectorDB] Removed deleted diary "${cachedName}" from name vector cache.`);
+            }
+        }
+
+        // 检查新增的日记本
+        const namesToVectorize = [];
+        for (const currentName of currentDiaryNames) {
+            if (!cachedNames.has(currentName)) {
+                namesToVectorize.push(currentName);
+            }
+        }
+
+        if (namesToVectorize.length > 0) {
+            console.log(`[VectorDB] Found ${namesToVectorize.length} new diary books to vectorize.`);
+            hasChanges = true;
+            try {
+                const vectors = await this.getEmbeddingsWithRetry(namesToVectorize);
+                if (vectors.length !== namesToVectorize.length) {
+                    throw new Error(`Vectorization count mismatch: expected ${namesToVectorize.length}, got ${vectors.length}`);
+                }
+                for (let i = 0; i < namesToVectorize.length; i++) {
+                    this.diaryNameVectors.set(namesToVectorize[i], vectors[i]);
+                }
+            } catch (error) {
+                console.error('[VectorDB] Failed to vectorize new diary book names:', error);
+                // 如果向量化失败，则不保存，避免写入部分状态
+                return;
+            }
+        }
+
+        if (hasChanges) {
+            await this.saveDiaryNameVectors();
+            console.log(`[VectorDB] Diary name vector cache updated. Total entries: ${this.diaryNameVectors.size}.`);
+        } else {
+            console.log('[VectorDB] Diary name vector cache is up-to-date.');
+        }
+    }
+
+    /**
+     * 获取缓存的日记本名称向量
+     * @param {string} diaryName - 日记本名称
+     * @returns {Array|null} - 向量数组或null
+     */
+    getDiaryNameVector(diaryName) {
+        return this.diaryNameVectors.get(diaryName) || null;
+    }
+
     async loadUsageStats() {
         try {
             const data = await fs.readFile(USAGE_STATS_PATH, 'utf-8');
@@ -773,6 +882,16 @@ class VectorDBManager {
         
         await Promise.all(preLoadPromises);
         console.log(`[VectorDB] Pre-warmed ${preLoadCount} most frequently used indices.`);
+    }
+
+    async shutdown() {
+        console.log('[VectorDB] Shutting down worker pool...');
+        if (this.searchWorkerPool && typeof this.searchWorkerPool.terminate === 'function') {
+            await this.searchWorkerPool.terminate();
+            console.log('[VectorDB] Worker pool shut down successfully.');
+        } else {
+            console.log('[VectorDB] Worker pool not found or does not have a terminate method.');
+        }
     }
 }
 

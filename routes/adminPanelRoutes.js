@@ -5,6 +5,7 @@ const PREPROCESSOR_ORDER_FILE = path.join(__dirname, '..', 'preprocessor_order.j
 
 // 导入 reidentify_image 函数 (现在是 reidentify_media)
 const { reidentifyMediaByBase64Key } = require('../Plugin/ImageProcessor/reidentify_image');
+const { getAuthCode } = require('../modules/captchaDecoder'); // 导入统一的解码函数
 
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
@@ -105,6 +106,28 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ success: false, error: 'Failed to get system resources', details: error.message });
         }
     });
+
+
+   // 新增：获取 UserAuth 认证码 (现在会解密)
+   adminApiRouter.get('/user-auth-code', async (req, res) => {
+       const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
+       try {
+           // 直接调用 getAuthCode 函数，它封装了读取和解密逻辑
+           const decryptedCode = await getAuthCode(authCodePath);
+           if (decryptedCode) {
+               res.json({ success: true, code: decryptedCode });
+           } else {
+               // 如果 getAuthCode 返回空字符串或其他假值，说明内部发生了错误
+               throw new Error('Failed to get auth code internally.');
+           }
+       } catch (error) {
+           if (error.code === 'ENOENT') {
+               res.status(404).json({ success: false, error: '认证码文件未找到。插件可能尚未运行。' });
+           } else {
+               res.status(500).json({ success: false, error: '读取或解密认证码文件失败。', details: error.message });
+           }
+       }
+   });
     // --- End System Monitor Routes ---
  
     // --- Server Log API ---
@@ -309,7 +332,6 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
             if (enable) {
                 try {
-                    await fs.rename(blockedManifestPathToUse, manifestPathToUse);
                     await fs.rename(blockedManifestPathToUse, manifestPathToUse);
                     await pluginManager.loadPlugins(); // 重新加载插件以更新内存状态
                     res.json({ message: `插件 ${pluginName} 已启用。` });

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"No tests defined\" && exit 0"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
@@ -11,6 +11,8 @@
   "description": "",
   "dependencies": {
     "@dqbd/tiktoken": "^1.0.22",
+    "@mozilla/readability": "^0.6.0",
+    "@node-rs/jieba": "^2.0.1",
     "@tavily/core": "^0.5.2",
     "axios": "^1.6.0",
     "basic-auth": "^2.0.1",
@@ -26,7 +28,7 @@
     "hnswlib-node": "^1.4.2",
     "https-browserify": "^1.0.0",
     "ioredis": "^5.6.1",
-    "jsdom": "^24.0.0",
+    "jsdom": "^24.1.3",
     "mailparser": "^3.7.4",
     "mammoth": "^1.11.0",
     "md5": "^2.3.0",

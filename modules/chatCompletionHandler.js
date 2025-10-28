@@ -1,6 +1,22 @@
 // modules/chatCompletionHandler.js
 const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
+const fs = require('fs').promises;
+const path = require('path');
+const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
+
+async function getRealAuthCode(debugMode = false) {
+  try {
+    const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
+    // 使用正确的 getAuthCode 函数，它会自行处理文件读取和解码
+    return await getAuthCode(authCodePath);
+  } catch (error) {
+    if (debugMode) {
+      console.error('[VCPToolCode] Failed to read or decrypt auth code:', error);
+    }
+    return null; // Return null if code cannot be obtained
+  }
+}
 
 // A helper function to handle fetch with retries for specific status codes
 async function fetchWithRetry(url, options, retries = 3, delay = 1000, debugMode = false) {
@@ -55,6 +71,7 @@ class ChatCompletionHandler {
       webSocketServer,
       DEBUG_MODE,
       SHOW_VCP_OUTPUT,
+      VCPToolCode,
       maxVCPLoopStream,
       maxVCPLoopNonStream,
       apiRetries,
@@ -621,6 +638,43 @@ class ChatCompletionHandler {
             let toolResultText; // For logs and simple text display
             let toolResultContentForAI; // For the next AI call (can be rich content)
 
+            if (VCPToolCode) {
+              const realAuthCode = await getRealAuthCode(DEBUG_MODE);
+              const providedPassword = toolCall.args.tool_password;
+              delete toolCall.args.tool_password; // Remove password from args regardless of correctness
+
+              if (!realAuthCode || providedPassword !== realAuthCode) {
+                const errorMessage = `[VCP] 错误：工具调用验证失败。您没有提供'tool_password'或'tool_password'不正确。请向用户询问正确的验证码。`;
+                if (DEBUG_MODE)
+                  console.warn(
+                    `[VCPToolCode] Verification failed for tool '${toolCall.name}'. Provided: '${providedPassword}', Expected: '${realAuthCode}'`,
+                  );
+
+                toolResultText = errorMessage;
+                toolResultContentForAI = [{ type: 'text', text: errorMessage }];
+
+                webSocketServer.broadcast(
+                  {
+                    type: 'vcp_log',
+                    data: {
+                      tool_name: toolCall.name,
+                      status: 'error',
+                      content: "工具调用验证失败：'tool_password'不正确或缺失。",
+                      source: 'stream_loop_auth_error',
+                    },
+                  },
+                  'VCPLog',
+                );
+
+                if (shouldShowVCP && !res.writableEnded) {
+                  vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', "工具调用验证失败：'tool_password'不正确或缺失。");
+                }
+
+                return toolResultContentForAI; // Return the error message and skip execution
+              }
+              if (DEBUG_MODE) console.log(`[VCPToolCode] Verification successful for tool '${toolCall.name}'.`);
+            }
+
             if (pluginManager.getPlugin(toolCall.name)) {
               try {
                 if (DEBUG_MODE)
@@ -1021,6 +1075,50 @@ class ChatCompletionHandler {
               let toolResultText;
               let toolResultContentForAI;
 
+              if (VCPToolCode) {
+                const realAuthCode = await getRealAuthCode(DEBUG_MODE);
+                const providedPassword = toolCall.args.tool_password;
+                delete toolCall.args.tool_password; // Remove password from args regardless of correctness
+
+                if (!realAuthCode || providedPassword !== realAuthCode) {
+                  const errorMessage = `[VCP] 错误：工具调用验证失败。您没有提供'tool_password'或'tool_password'不正确。请向用户询问正确的验证码。`;
+                  if (DEBUG_MODE)
+                    console.warn(
+                      `[VCPToolCode] Verification failed for tool '${toolCall.name}'. Provided: '${providedPassword}', Expected: '${realAuthCode}'`,
+                    );
+
+                  toolResultText = errorMessage;
+                  toolResultContentForAI = [{ type: 'text', text: errorMessage }];
+
+                  webSocketServer.broadcast(
+                    {
+                      type: 'vcp_log',
+                      data: {
+                        tool_name: toolCall.name,
+                        status: 'error',
+                        content: "工具调用验证失败：'tool_password'不正确或缺失。",
+                        source: 'non_stream_loop_auth_error',
+                      },
+                    },
+                    'VCPLog',
+                  );
+
+                  if (shouldShowVCP) {
+                    const vcpText = vcpInfoHandler.streamVcpInfo(
+                      null,
+                      originalBody.model,
+                      toolCall.name,
+                      'error',
+                      "工具调用验证失败：'tool_password'不正确或缺失。",
+                    );
+                    if (vcpText) conversationHistoryForClient.push(vcpText);
+                  }
+
+                  return toolResultContentForAI; // Return the error message and skip execution
+                }
+                if (DEBUG_MODE) console.log(`[VCPToolCode] Verification successful for tool '${toolCall.name}'.`);
+              }
+
               if (pluginManager.getPlugin(toolCall.name)) {
                 try {
                   if (DEBUG_MODE)
@@ -1300,7 +1398,11 @@ class ChatCompletionHandler {
       }
     } finally {
       if (id) {
-        activeRequests.delete(id);
+        const requestData = activeRequests.get(id);
+        if (requestData) {
+          requestData.abortController.abort();
+          activeRequests.delete(id);
+        }
       }
     }
   }
