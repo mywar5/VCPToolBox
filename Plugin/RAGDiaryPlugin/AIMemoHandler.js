@@ -72,7 +72,13 @@ class AIMemoHandler {
             const cached = this._getCache(cacheKey);
             if (cached) {
                 console.log(`[AIMemoHandler] 命中缓存，直接返回结果。Key: ${cacheKey}`);
-                return cached;
+                if (this.ragPlugin.pushVcpInfo && cached.vcpInfo) {
+                    this.ragPlugin.pushVcpInfo({
+                        ...cached.vcpInfo,
+                        fromCache: true
+                    });
+                }
+                return cached.content;
             }
             console.log(`[AIMemoHandler] 未命中缓存，继续处理。Key: ${cacheKey}`);
             // --- 缓存机制结束 ---
@@ -105,15 +111,24 @@ class AIMemoHandler {
             console.log(`[AIMemoHandler] Token估算 - 文件总计: ${totalFileTokens}, 固定开销: ${FIXED_OVERHEAD}, 总计: ${totalTokens}`);
 
             // 3. 处理（单次或分批）
-            let result;
+            let resultObject;
             if (totalTokens > this.config.maxTokensPerBatch) {
-                result = await this._processBatchedAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay);
+                resultObject = await this._processBatchedAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay);
             } else {
-                result = await this._processSingleAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay);
+                resultObject = await this._processSingleAggregated(loadedDiaries, allDiaryFiles, userContent, aiContent, combinedQueryForDisplay);
             }
 
-            this._setCache(cacheKey, result);
-            return result;
+            // VCP Info 广播 (非缓存)
+            if (this.ragPlugin.pushVcpInfo && resultObject.vcpInfo) {
+                try {
+                    this.ragPlugin.pushVcpInfo(resultObject.vcpInfo);
+                } catch (broadcastError) {
+                    console.error('[AIMemoHandler] VCP Info broadcast failed:', broadcastError);
+                }
+            }
+
+            this._setCache(cacheKey, resultObject);
+            return resultObject.content;
 
         } catch (error) {
             console.error(`[AIMemoHandler] 聚合处理失败:`, error);
@@ -174,25 +189,19 @@ class AIMemoHandler {
 
         const extractedMemories = this._extractMemories(aiResponse);
         
-        // VCP Info 广播
-        if (this.ragPlugin.pushVcpInfo) {
-            try {
-                this.ragPlugin.pushVcpInfo({
-                    type: 'AI_MEMO_RETRIEVAL',
-                    dbNames: dbNames,
-                    query: combinedQueryForDisplay,
-                    mode: 'aggregated_single',
-                    diaryCount: dbNames.length,
-                    fileCount: diaryFiles.length,
-                    rawResponse: aiResponse,
-                    extractedMemories: extractedMemories
-                });
-            } catch (broadcastError) {
-                console.error('[AIMemoHandler] VCP Info broadcast failed:', broadcastError);
-            }
-        }
+        const content = `[跨库联合检索: ${dbNames.join(' + ')}]\n${extractedMemories}`;
+        const vcpInfo = {
+            type: 'AI_MEMO_RETRIEVAL',
+            dbNames: dbNames,
+            query: combinedQueryForDisplay,
+            mode: 'aggregated_single',
+            diaryCount: dbNames.length,
+            fileCount: diaryFiles.length,
+            rawResponse: aiResponse,
+            extractedMemories: extractedMemories
+        };
 
-        return `[跨库联合检索: ${dbNames.join(' + ')}]\n${extractedMemories}`;
+        return { content, vcpInfo };
     }
 
     /**
@@ -223,25 +232,19 @@ class AIMemoHandler {
 
         const mergedMemories = this._mergeBatchResults(batchResults);
 
-        // VCP Info 广播
-        if (this.ragPlugin.pushVcpInfo) {
-            try {
-                this.ragPlugin.pushVcpInfo({
-                    type: 'AI_MEMO_RETRIEVAL',
-                    dbNames: dbNames,
-                    query: combinedQueryForDisplay,
-                    mode: 'aggregated_batched',
-                    diaryCount: dbNames.length,
-                    fileCount: diaryFiles.length,
-                    batchCount: batches.length,
-                    extractedMemories: mergedMemories
-                });
-            } catch (broadcastError) {
-                console.error('[AIMemoHandler] VCP Info broadcast failed:', broadcastError);
-            }
-        }
+        const content = `[跨库联合检索: ${dbNames.join(' + ')}]\n${mergedMemories}`;
+        const vcpInfo = {
+            type: 'AI_MEMO_RETRIEVAL',
+            dbNames: dbNames,
+            query: combinedQueryForDisplay,
+            mode: 'aggregated_batched',
+            diaryCount: dbNames.length,
+            fileCount: diaryFiles.length,
+            batchCount: batches.length,
+            extractedMemories: mergedMemories
+        };
 
-        return `[跨库联合检索: ${dbNames.join(' + ')}]\n${mergedMemories}`;
+        return { content, vcpInfo };
     }
 
     /**
