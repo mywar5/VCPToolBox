@@ -543,10 +543,21 @@ class KnowledgeBaseManager {
         }
     }
 
+    /**
+     * 公共接口：应用 TagMemo 增强向量
+     * @param {Float32Array|Array<number>} vector - 原始查询向量
+     * @param {number} tagBoost - 增强因子 (0 到 1)
+     * @returns {{vector: Float32Array, info: object|null}} - 返回增强后的向量和调试信息
+     */
+    applyTagBoost(vector, tagBoost) {
+        // 包装私有方法，提供稳定的公共接口
+        return this._applyTagBoost(vector, tagBoost);
+    }
+ 
     // =========================================================================
     // 兼容性 API (修复版)
     // =========================================================================
-
+ 
     // 🛠️ 修复 3: 同步回退 + 缓存预热
     async getDiaryNameVector(diaryName) {
         if (!diaryName) return null;
