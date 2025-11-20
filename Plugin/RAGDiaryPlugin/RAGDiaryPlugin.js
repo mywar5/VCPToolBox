@@ -1317,6 +1317,13 @@ class RAGDiaryPlugin {
         
         if (this.pushVcpInfo && finalResultsForBroadcast) {
             try {
+                // ✅ 新增：根据相关度分数对结果进行排序
+                finalResultsForBroadcast.sort((a, b) => {
+                    const scoreA = a.rerank_score ?? a.score ?? -1;
+                    const scoreB = b.rerank_score ?? b.score ?? -1;
+                    return scoreB - scoreA;
+                });
+                
                 const cleanedResults = this._cleanResultsForBroadcast(finalResultsForBroadcast);
                 vcpInfoData = {
                     type: 'RAG_RETRIEVAL_DETAILS',
