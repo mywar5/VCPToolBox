@@ -14,13 +14,11 @@ dayjs.extend(timezone);
 const DEFAULT_TIMEZONE = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
 
 class AIMemoHandler {
-    constructor(ragPlugin) {
+    constructor(ragPlugin, cache) {
         this.ragPlugin = ragPlugin;
         this.config = {};
         this.promptTemplate = '';
-        this.cache = new Map();
-        this.cacheMaxSize = parseInt(process.env.AIMemoCacheSize) || 10; // 缓存大小
-        this.cacheTTL = (parseInt(process.env.AIMemoCacheTTL) || 10) * 60 * 1000; // 缓存有效期（分钟）
+        this.cache = cache; // ✅ 使用注入的缓存
         // 不在构造函数中调用 loadConfig，而是在主插件初始化时调用
     }
 
@@ -137,7 +135,7 @@ class AIMemoHandler {
             return null;
         }
 
-        if (Date.now() - entry.timestamp > this.cacheTTL) {
+        if (Date.now() - entry.timestamp > this.ragPlugin.aiMemoCacheTTL) {
             console.log(`[AIMemoHandler] 缓存条目已过期，删除。Key: ${key}`);
             this.cache.delete(key);
             return null;
@@ -147,7 +145,7 @@ class AIMemoHandler {
     }
 
     _setCache(key, result) {
-        if (this.cache.size >= this.cacheMaxSize) {
+        if (this.cache.size >= this.ragPlugin.aiMemoCacheMaxSize) {
             // 删除最旧的条目 (Map an insertion order)
             const oldestKey = this.cache.keys().next().value;
             this.cache.delete(oldestKey);
