@@ -56,28 +56,8 @@ async function replaceOtherVariables(text, model, role, context) {
     if (text == null) return '';
     let processedText = String(text);
 
-    if (role === 'system') {
-        for (const envKey in process.env) {
-            if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
-                const placeholder = `{{${envKey}}}`;
-                if (processedText.includes(placeholder)) {
-                    const value = process.env[envKey];
-                    if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
-                        const fileContent = await tvsManager.getContent(value);
-                        // 检查内容是否表示错误
-                        if (fileContent.startsWith('[变量文件') || fileContent.startsWith('[处理变量文件')) {
-                            processedText = processedText.replaceAll(placeholder, fileContent);
-                        } else {
-                            const resolvedContent = await replaceOtherVariables(fileContent, model, role, context);
-                            processedText = processedText.replaceAll(placeholder, resolvedContent);
-                        }
-                    } else {
-                        processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
-                    }
-                }
-            }
-        }
-
+    // SarModel 高级预设注入，对 system 角色或 VCPTavern 注入的 user 角色生效
+    if (role === 'system' || (role === 'user' && processedText.startsWith('[系统'))) {
         let sarPromptToInject = null;
         const modelToPromptMap = new Map();
         for (const envKey in process.env) {
@@ -114,6 +94,29 @@ async function replaceOtherVariables(text, model, role, context) {
             processedText = processedText.replaceAll(sarPlaceholderRegex, sarPromptToInject);
         } else {
             processedText = processedText.replaceAll(sarPlaceholderRegex, '');
+        }
+    }
+
+    if (role === 'system') {
+        for (const envKey in process.env) {
+            if (envKey.startsWith('Tar') || envKey.startsWith('Var')) {
+                const placeholder = `{{${envKey}}}`;
+                if (processedText.includes(placeholder)) {
+                    const value = process.env[envKey];
+                    if (value && typeof value === 'string' && value.toLowerCase().endsWith('.txt')) {
+                        const fileContent = await tvsManager.getContent(value);
+                        // 检查内容是否表示错误
+                        if (fileContent.startsWith('[变量文件') || fileContent.startsWith('[处理变量文件')) {
+                            processedText = processedText.replaceAll(placeholder, fileContent);
+                        } else {
+                            const resolvedContent = await replaceOtherVariables(fileContent, model, role, context);
+                            processedText = processedText.replaceAll(placeholder, resolvedContent);
+                        }
+                    } else {
+                        processedText = processedText.replaceAll(placeholder, value || `[未配置 ${envKey}]`);
+                    }
+                }
+            }
         }
 
         const now = new Date();
