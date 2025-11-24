@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name           OpenWebUI VCP Tool Call Display Enhancer
-// @version        2.0.0
+// @version        2.1.0
 // @description    Uses a global "Pending Set" to track unfinished tool calls. Any stream update anywhere on the page triggers a check on pending items, ensuring previous blocks render immediately upon completion.
 // @author         B3000Kcn
 // @match          https://your.openwebui.url/*
@@ -13,7 +13,7 @@
     'use strict';
 
     // ==========================================
-    // 1. 样式配置
+    // 1. 样式配置 (零间隙版)
     // ==========================================
     function addStyle(css) {
         if (typeof GM_addStyle !== 'undefined') {
@@ -29,22 +29,19 @@
     const HIDDEN_CLASS = "vcp-display-none";
 
     const CSS_RULES = `
-        /* 原始节点：彻底隐藏，不占空间 */
         .${HIDDEN_CLASS} {
             display: none !important;
         }
-
-        /* 卡片容器 */
         .${CARD_CLASS} {
             all: initial;
             display: block;
             font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
             border: 1px solid #e5e7eb;
-            border-radius: 4px;
-            margin: 4px 0 !important;
+            border-radius: 8px;
+            margin: 8px 0 !important;
             overflow: hidden;
             background-color: #ffffff;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.04);
             width: 100%;
             box-sizing: border-box;
             position: relative;
@@ -55,16 +52,16 @@
             border-color: #333;
         }
 
-        /* 标题栏 */
+        /* Header */
         .${CARD_CLASS} .vcp-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 2px 8px !important;
+            padding: 0 12px !important;
             background-color: #f9fafb;
             border-bottom: 1px solid #e5e7eb;
-            height: 26px;
-            min-height: 26px;
+            height: 36px;
+            min-height: 36px;
             box-sizing: border-box;
         }
         .dark .${CARD_CLASS} .vcp-header {
@@ -72,28 +69,29 @@
             border-color: #333;
         }
         .${CARD_CLASS} .vcp-title {
-            font-size: 0.75rem;
-            font-weight: 600;
+            font-size: 0.85rem;
+            font-weight: 400;
             color: #6b7280;
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
         }
         .dark .${CARD_CLASS} .vcp-title { color: #9ca3af; }
+        .${CARD_CLASS} .vcp-name-text {
+            font-weight: 700;
+            color: #1f2937;
+        }
+        .dark .${CARD_CLASS} .vcp-name-text { color: #e5e7eb; }
 
-        /* 按钮 */
+        /* Button */
         .${CARD_CLASS} .vcp-btn {
-            padding: 0 6px;
-            height: 18px;
-            font-size: 0.65rem;
-            border-radius: 2px;
+            padding: 1px 8px;
+            font-size: 0.75rem;
+            border-radius: 4px;
             border: 1px solid #d1d5db;
             background: white;
             cursor: pointer;
             color: #4b5563;
-            display: flex;
-            align-items: center;
-            justify-content: center;
             transition: all 0.2s;
         }
         .dark .${CARD_CLASS} .vcp-btn {
@@ -104,69 +102,109 @@
         .${CARD_CLASS} .vcp-btn:hover { background: #f3f4f6; color: #000; }
         .dark .${CARD_CLASS} .vcp-btn:hover { background: #333; color: #fff; }
 
-        /* 内容区 */
+        /* Body */
         .${CARD_CLASS} .vcp-body {
             display: block;
             padding: 0 !important;
             margin: 0 !important;
-            background-color: #fdfdfd;
+            background-color: #fff;
         }
         .dark .${CARD_CLASS} .vcp-body {
             background-color: #0d0d0d;
         }
 
-        /* 代码块：核心 pre-wrap */
-        .${CARD_CLASS} .vcp-code {
-            display: block !important;
-            padding: 4px 8px !important;
-            margin: 0 !important;
-            background-color: transparent !important;
+        /* === Flush Table Layout === */
+        .${CARD_CLASS} .vcp-table-grid {
+            display: grid;
+            grid-template-columns: max-content 1fr;
+            width: 100%;
             font-family: "Menlo", "Monaco", "Consolas", monospace !important;
-            font-size: 0.75rem !important;
-            line-height: 1.35 !important;
-            color: #1f2937 !important;
-            overflow-x: auto;
-            white-space: pre-wrap !important;
-            word-break: break-all;
-            border: none !important;
+            font-size: 0.85rem !important;
+            line-height: 1.45 !important;
+            color: #374151;
+            gap: 0 !important;
+            /* 关键：移除所有容器Padding，内容紧贴边框 */
+            padding: 0 !important;
         }
-        .dark .${CARD_CLASS} .vcp-code { color: #d1d5db !important; }
+        .dark .${CARD_CLASS} .vcp-table-grid { color: #d1d5db; }
 
-        /* 运行中状态 */
+        /* Key Cell */
+        .${CARD_CLASS} .vcp-key {
+            text-align: right;
+            font-weight: 700;
+            color: #4b5563;
+            padding: 4px 12px; /* 保持内部微小呼吸感 */
+            border-bottom: 1px solid #f3f4f6;
+            border-right: 1px solid #f3f4f6;
+            white-space: nowrap;
+            background-color: #fafafa;
+        }
+        .dark .${CARD_CLASS} .vcp-key {
+            color: #9ca3af;
+            background-color: #141414;
+            border-bottom-color: #262626;
+            border-right-color: #262626;
+        }
+
+        /* Value Cell */
+        .${CARD_CLASS} .vcp-val {
+            text-align: left;
+            padding: 4px 12px 4px 10px;
+            border-bottom: 1px solid #f3f4f6;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #111827;
+        }
+        .dark .${CARD_CLASS} .vcp-val {
+            color: #e5e7eb;
+            border-bottom-color: #262626;
+        }
+
+        /* 移除最后一行的底部边框，实现完美闭合 */
+        .${CARD_CLASS} .vcp-key:last-of-type,
+        .${CARD_CLASS} .vcp-val:last-of-type {
+            border-bottom: none !important;
+        }
+
+        /* Full Row */
+        .${CARD_CLASS} .vcp-full {
+            grid-column: 1 / -1;
+            padding: 2px 12px;
+            color: #9ca3af;
+            font-size: 0.8em;
+            border-bottom: 1px solid transparent;
+        }
+
+        /* Status */
         .${CARD_CLASS} .vcp-status-running {
             font-style: italic;
             color: #9ca3af;
-            padding: 8px;
+            padding: 12px; /* Running状态保持一点边距 */
+            font-family: monospace;
         }
     `;
 
     // ==========================================
-    // 2. 常量与全局状态
+    // 2. 常量
     // ==========================================
     const START_MARKER = "<<<[TOOL_REQUEST]>>>";
     const END_MARKER = "<<<[END_TOOL_REQUEST]>>>";
 
-    // 关键：全局待办列表
-    // 只要卡片还没渲染完，就一直留在这里
     const pendingStates = new Set();
-    // 辅助 Map 防止重复创建
     const processedElements = new WeakMap();
 
     // ==========================================
-    // 3. 核心：HTML 格式解析
+    // 3. 核心工具
     // ==========================================
     function extractTextFromHTML(html) {
         const temp = document.createElement('div');
         temp.innerHTML = html;
-
         const brs = temp.querySelectorAll('br');
         brs.forEach(br => br.replaceWith('\n'));
-
         const blocks = temp.querySelectorAll('div, p, tr, li');
         blocks.forEach(blk => {
             blk.after(document.createTextNode('\n'));
         });
-
         return temp.textContent;
     }
 
@@ -184,43 +222,71 @@
         container.innerHTML = `
             <div class="vcp-header">
                 <div class="vcp-title">
-                    <span style="font-size:1.1em; line-height:1; margin-right:4px;">⚙️</span>
-                    <span class="vcp-name-text">Tool Call</span>
+                    <span style="font-size:1.1em; line-height:1; margin-right:6px;">⚙️</span>
+                    <span>VCP Tool Call: </span>
+                    <span class="vcp-name-text" style="margin-left: 4px;"></span>
                 </div>
                 <div>
                     <button class="vcp-btn copy-btn" style="display:none">Copy</button>
                 </div>
             </div>
             <div class="vcp-body">
-                <div class="vcp-code vcp-status-running">Running...</div>
+                <div class="vcp-table-grid vcp-status-running">Running...</div>
             </div>
         `;
         return {
             container,
             titleText: container.querySelector('.vcp-name-text'),
-            codeBlock: container.querySelector('.vcp-code'),
+            gridContainer: container.querySelector('.vcp-table-grid'),
             copyBtn: container.querySelector('.copy-btn')
         };
     }
 
     // ==========================================
-    // 5. 逻辑：检查与渲染
+    // 5. 渲染逻辑
     // ==========================================
 
-    function checkAndRenderState(state) {
-        // 1. 快速检查结束标记 (textContent 在 display:none 下依然有效)
-        const rawTextContent = state.targetParent.textContent || "";
+    function renderTable(container, text) {
+        container.innerHTML = ''; // 清空
+        container.classList.remove('vcp-status-running');
 
-        // 如果没有结束标记，直接返回，继续留在 pending 列表里
+        const lines = text.split('\n');
+
+        lines.forEach(line => {
+            if (!line.trim()) return;
+
+            const match = line.match(/^(\s*)([^:]+?)(:\s+)(.*)$/);
+
+            if (match) {
+                const [_, indent, key, sep, value] = match;
+
+                const keyDiv = document.createElement('div');
+                keyDiv.className = 'vcp-key';
+                keyDiv.textContent = key;
+
+                const valDiv = document.createElement('div');
+                valDiv.className = 'vcp-val';
+                valDiv.textContent = value;
+
+                container.appendChild(keyDiv);
+                container.appendChild(valDiv);
+            } else {
+                const fullDiv = document.createElement('div');
+                fullDiv.className = 'vcp-full';
+                fullDiv.textContent = line;
+                container.appendChild(fullDiv);
+            }
+        });
+    }
+
+    function checkAndRenderState(state) {
+        const rawTextContent = state.targetParent.textContent || "";
         if (!rawTextContent.includes(END_MARKER)) return false;
 
-        // --- 结束标记检测到，开始渲染 ---
-
-        // 2. 解析 HTML 获取格式化文本
+        // --- 开始处理 ---
         const rawHTML = state.targetParent.innerHTML;
         const fullFormattedText = extractTextFromHTML(rawHTML);
 
-        // 3. 提取内容
         let cleanContent = fullFormattedText;
         const sIdx = fullFormattedText.indexOf(START_MARKER);
         const eIdx = fullFormattedText.lastIndexOf(END_MARKER);
@@ -229,17 +295,26 @@
             cleanContent = fullFormattedText.substring(sIdx + START_MARKER.length, eIdx);
         }
 
+        cleanContent = cleanContent.replace(/^\s*tool_name:\s*「始」[\s\S]*?「末」\s*,?\s*(\n|$)/i, "");
+
+        cleanContent = cleanContent.split('\n').map(line => {
+            let l = line.replace("「始」", " ");
+            const lastEndIndex = l.lastIndexOf("「末」");
+            if (lastEndIndex !== -1) {
+                l = l.substring(0, lastEndIndex);
+            }
+            return l;
+        }).join('\n');
+
         cleanContent = cleanContent.trim();
 
-        // 4. 更新 UI
         const toolName = parseToolName(fullFormattedText);
-        state.dom.titleText.textContent = `VCP Tool Call: ${toolName}`;
+        state.dom.titleText.textContent = toolName;
 
-        state.dom.codeBlock.classList.remove('vcp-status-running');
-        state.dom.codeBlock.textContent = cleanContent;
+        renderTable(state.dom.gridContainer, cleanContent);
+
         state.dom.copyBtn.style.display = 'inline-flex';
 
-        // 5. 绑定复制
         state.dom.copyBtn.onclick = async (e) => {
             e.stopPropagation();
             try {
@@ -256,16 +331,13 @@
             } catch (err) {}
         };
 
-        // 返回 true 表示渲染完成，可以从待办列表中移除
         return true;
     }
 
     function processTarget(parent) {
         if (!parent.isConnected) return;
-        // 如果已经处理过
         if (processedElements.has(parent)) return;
 
-        // 黑名单与防吞噬
         const tag = parent.tagName;
         if (['TEXTAREA', 'INPUT', 'SCRIPT', 'STYLE'].includes(tag)) return;
         if (parent.classList.contains(CARD_CLASS)) return;
@@ -276,53 +348,41 @@
         });
         if (hasBlockChildren) return;
 
-        // 初始化拦截
         if (!parent.textContent.includes(START_MARKER)) return;
 
-        // 1. 创建卡片
         const dom = createCardDOM();
-
-        // 2. 插入卡片
         parent.parentNode.insertBefore(dom.container, parent);
-
-        // 3. 隐藏原始节点
         parent.classList.add(HIDDEN_CLASS);
 
-        // 4. 创建状态
         const state = {
             dom: dom,
             targetParent: parent
         };
 
         processedElements.set(parent, state);
-        pendingStates.add(state); // 加入待办列表！
+        pendingStates.add(state);
 
-        // 5. 立即检查一次
         if (checkAndRenderState(state)) {
             pendingStates.delete(state);
         }
     }
 
     // ==========================================
-    // 6. 全局监听 (事件驱动 + 待办检查)
+    // 6. 全局监听
     // ==========================================
     function init() {
-        console.log('OpenWebUI VCP Enhancer (v36.0.0 Pending-List) Activated');
+        console.log('OpenWebUI VCP Enhancer (v44.0.0 Flush Fix) Activated');
         addStyle(CSS_RULES);
 
         const observer = new MutationObserver(mutations => {
-            // 1. 每次 DOM 变动，首先检查待办列表 (Pending List)
-            // 借用其他节点的更新事件，来触发对“旧”卡片的检查
             if (pendingStates.size > 0) {
                 pendingStates.forEach(state => {
-                    // 如果渲染成功，从未完成列表中移除
                     if (checkAndRenderState(state)) {
                         pendingStates.delete(state);
                     }
                 });
             }
 
-            // 2. 寻找新的目标 (标准流程)
             const parentsToCheck = new Set();
             for (const m of mutations) {
                 if (m.type === 'characterData') {
@@ -356,7 +416,6 @@
 
         observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-        // 初始扫描
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let tn;
         while (tn = walker.nextNode()) {
