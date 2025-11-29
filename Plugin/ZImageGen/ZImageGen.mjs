@@ -21,43 +21,74 @@ const {
     };
 })();
 
-const API_BASE_URL = 'https://tongyi-mai-z-image-turbo.hf.space/gradio_api';
+const API_BASE_URL = 'https://mrfakename-z-image-turbo.hf.space/gradio_api';
 
 // --- 2. 核心功能函数 ---
 
 /**
- * 调用 Gradio API 生成图像
+ * 解析分辨率字符串为宽高
+ * @param {string} resolution - 分辨率字符串，如 "1024x1024", "16:9", "landscape"
+ * @returns {{width: number, height: number}}
+ */
+function parseResolution(resolution) {
+    if (!resolution) return { width: 1024, height: 1024 };
+    
+    const res = resolution.toLowerCase().trim();
+    
+    // 预设比例
+    const presets = {
+        'square': { width: 1024, height: 1024 },
+        'landscape': { width: 1280, height: 720 },
+        'portrait': { width: 720, height: 1280 },
+        '16:9': { width: 1280, height: 720 },
+        '9:16': { width: 720, height: 1280 },
+        '4:3': { width: 1152, height: 864 },
+        '3:4': { width: 864, height: 1152 },
+        '1:1': { width: 1024, height: 1024 }
+    };
+    
+    if (presets[res]) return presets[res];
+    
+    // 解析 WxH 格式
+    const match = res.match(/(\d+)\s*[x×]\s*(\d+)/i);
+    if (match) {
+        return { width: parseInt(match[1]), height: parseInt(match[2]) };
+    }
+    
+    return { width: 1024, height: 1024 };
+}
+
+/**
+ * 调用 Gradio API 生成图像 (新版API格式)
  * @param {object} args - 生成参数
- * @returns {Promise<string>} - 生成的图像 URL
+ * @returns {Promise<{imageUrl: string, seed: number}>} - 生成的图像 URL 和 seed
  */
 async function callGradioApi(args) {
     const prompt = args.prompt;
-    const resolution = args.resolution || "1024x1024 ( 1:1 )";
+    const { width, height } = parseResolution(args.resolution);
     const seed = parseInt(args.seed) || 42;
-    const steps = parseInt(args.steps) || 8;
-    const shift = parseFloat(args.shift) || 3;
+    const steps = parseInt(args.steps) || 9; // 新API默认9步
     const randomSeed = args.random_seed !== 'false'; // 默认为 true
 
-    // 1. 提交任务
+    // 新API格式: /generate_image 端点
     const payload = {
         data: [
-            prompt,
-            resolution,
-            seed,
-            steps,
-            shift,
-            randomSeed,
-            [] // gallery_images
+            prompt,           // prompt: string
+            height,           // height: number
+            width,            // width: number  
+            steps,            // num_inference_steps: number
+            seed,             // seed: number
+            randomSeed        // randomize_seed: boolean
         ]
     };
 
     try {
-        const response = await axios.post(`${API_BASE_URL}/call/generate`, payload, {
+        const response = await axios.post(`${API_BASE_URL}/call/generate_image`, payload, {
             headers: { 'Content-Type': 'application/json' }
         });
         const eventId = response.data.event_id;
 
-        // 2. 监听结果 (轮询 SSE 接口)
+        // 监听结果 (SSE 接口)
         return await listenForResult(eventId);
     } catch (error) {
         throw new Error(`Gradio API 调用失败: ${error.message}`);
@@ -67,10 +98,10 @@ async function callGradioApi(args) {
 /**
  * 监听 Gradio 任务结果
  * @param {string} eventId - 任务 ID
- * @returns {Promise<string>} - 图像 URL
+ * @returns {Promise<{imageUrl: string, seed: number}>} - 图像 URL 和 seed
  */
 async function listenForResult(eventId) {
-    const eventSourceUrl = `${API_BASE_URL}/call/generate/${eventId}`;
+    const eventSourceUrl = `${API_BASE_URL}/call/generate_image/${eventId}`;
     
     try {
         const response = await axios.get(eventSourceUrl, {
@@ -107,20 +138,24 @@ async function listenForResult(eventId) {
                 }
 
                 if (eventType === 'complete' && data) {
-                    if (Array.isArray(data) && data.length > 0) {
-                        const gallery = data[0];
-                        if (Array.isArray(gallery) && gallery.length > 0) {
-                            const lastImage = gallery[gallery.length - 1];
-                            if (lastImage && lastImage.image) {
-                                let downloadUrl = lastImage.image.url;
-                                if (!downloadUrl && lastImage.image.path) {
-                                    downloadUrl = `${API_BASE_URL}/file=${lastImage.image.path}`;
-                                }
-                                
-                                if (downloadUrl) {
-                                    return downloadUrl;
-                                }
-                            }
+                    // 新API返回格式: [imageUrl, seedUsed]
+                    if (Array.isArray(data) && data.length >= 2) {
+                        const imageResult = data[0];
+                        const seedUsed = data[1];
+                        
+                        let downloadUrl = null;
+                        
+                        // 处理不同的返回格式
+                        if (typeof imageResult === 'string') {
+                            downloadUrl = imageResult;
+                        } else if (imageResult && imageResult.url) {
+                            downloadUrl = imageResult.url;
+                        } else if (imageResult && imageResult.path) {
+                            downloadUrl = `${API_BASE_URL}/file=${imageResult.path}`;
+                        }
+                        
+                        if (downloadUrl) {
+                            return { imageUrl: downloadUrl, seed: seedUsed };
                         }
                     }
                 }
@@ -171,14 +206,15 @@ async function generateImage(args) {
         throw new Error("参数错误: 'prompt' 是必需的。");
     }
 
-    // 1. 调用 API 生成
-    const downloadUrl = await callGradioApi(args);
+    // 1. 调用 API 生成 (新API返回 {imageUrl, seed})
+    const apiResult = await callGradioApi(args);
 
     // 2. 下载并保存
-    const savedImage = await saveImage(downloadUrl);
+    const savedImage = await saveImage(apiResult.imageUrl);
 
     // 3. 构造返回结果
-    const finalResponseText = `图片已成功生成！\n\n**图片详情:**\n- 提示词: ${args.prompt}\n- 分辨率: ${args.resolution || "默认"}\n- 可访问URL: ${savedImage.imageUrl}\n\n请利用可访问url将图片转发给用户`;
+    const { width, height } = parseResolution(args.resolution);
+    const finalResponseText = `图片已成功生成！\n\n**图片详情:**\n- 提示词: ${args.prompt}\n- 分辨率: ${width}x${height}\n- Seed: ${apiResult.seed}\n- 可访问URL: ${savedImage.imageUrl}\n\n请利用可访问url将图片转发给用户`;
 
     return {
         content: [
@@ -195,7 +231,8 @@ async function generateImage(args) {
         ],
         details: {
             ...savedImage,
-            prompt: args.prompt
+            prompt: args.prompt,
+            seed: apiResult.seed
         }
     };
 }
@@ -221,10 +258,13 @@ async function main() {
         const parsedArgs = JSON.parse(inputData);
         let resultObject;
 
-        if (parsedArgs.command === 'generate') {
+        // 兼容多种命令格式：command='generate' 或直接传prompt
+        const command = parsedArgs.command || (parsedArgs.prompt ? 'generate' : undefined);
+        
+        if (command === 'generate' || command === 'ZImageGenerate') {
             resultObject = await generateImage(parsedArgs);
         } else {
-            throw new Error(`未知的命令: '${parsedArgs.command}'`);
+            throw new Error(`未知的命令: '${command}'. 输入数据: ${JSON.stringify(parsedArgs).substring(0, 200)}`);
         }
 
         console.log(JSON.stringify({ status: "success", result: resultObject }));
