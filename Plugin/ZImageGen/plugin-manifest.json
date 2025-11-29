@@ -1,0 +1,25 @@
+{
+  "manifestVersion": "1.0.0",
+  "name": "ZImageGen",
+  "displayName": "Z-Image 图像生成",
+  "version": "1.0.0",
+  "description": "调用 HuggingFace Z-Image 模型进行高质量图像生成。",
+  "author": "Kilo Code",
+  "pluginType": "synchronous",
+  "entryPoint": {
+    "type": "nodejs",
+    "command": "node ZImageGen.mjs"
+  },
+  "communication": {
+    "protocol": "stdio"
+  },
+  "capabilities": {
+    "invocationCommands": [
+      {
+        "commandIdentifier": "ZImageGenerate",
+        "description": "调用此工具使用 Z-Image 模型生成图像。请在您的回复中，使用以下精确格式来请求图片生成，确保所有参数值都用「始」和「末」准确包裹：\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」(必需) 用于生成图像的详细英文提示词。「末」,\nresolution:「始」(可选) 输出分辨率，格式为 \"WIDTHxHEIGHT ( RATIO )\"，例如 \"1024x1024 ( 1:1 )\"。默认为 \"1024x1024 ( 1:1 )\"。「末」,\nseed:「始」(可选) 随机种子，整数。默认为 42。「末」,\nsteps:「始」(可选) 推理步数，整数。默认为 8。「末」,\nshift:「始」(可选) 时间偏移参数，数字。默认为 3。「末」,\nrandom_seed:「始」(可选) 是否生成新的随机种子，布尔值。默认为 true。「末」\n<<<[END_TOOL_REQUEST]>>>",
+        "example": "```text\n<<<[TOOL_REQUEST]>>>\ntool_name:「始」ZImageGen「末」,\ncommand:「始」generate「末」,\nprompt:「始」A futuristic city with flying cars and neon lights「末」,\nresolution:「始」1024x1024 ( 1:1 )「末」\n<<<[END_TOOL_REQUEST]>>>\n```"
+      }
+    ]
+  }
+}
