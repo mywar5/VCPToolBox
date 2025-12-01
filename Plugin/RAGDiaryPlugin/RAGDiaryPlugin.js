@@ -563,34 +563,42 @@ class RAGDiaryPlugin {
     }
 
     _getWeightedAverageVector(vectors, weights) {
-        const [vecA, vecB] = vectors;
-        let [weightA, weightB] = weights;
-        
-        if (!vecA && !vecB) return null;
-        if (vecA && !vecB) return vecA;
-        if (!vecA && vecB) return vecB;
+        // 1. 过滤掉无效的向量及其对应的权重
+        const validVectors = [];
+        const validWeights = [];
+        for (let i = 0; i < vectors.length; i++) {
+            if (vectors[i] && vectors[i].length > 0) {
+                validVectors.push(vectors[i]);
+                validWeights.push(weights[i] || 0);
+            }
+        }
 
-        if (vecA.length !== vecB.length) {
-            console.error('[RAGDiaryPlugin] Vector dimensions do not match.');
-            return null;
-        }
-        
-        // 归一化权重
-        const sum = weightA + weightB;
-        if (sum === 0) {
+        if (validVectors.length === 0) return null;
+        if (validVectors.length === 1) return validVectors[0];
+
+        // 2. 归一化权重
+        let weightSum = validWeights.reduce((sum, w) => sum + w, 0);
+        if (weightSum === 0) {
             console.warn('[RAGDiaryPlugin] Weight sum is zero, using equal weights.');
-            weightA = 0.5;
-            weightB = 0.5;
-        } else {
-            weightA /= sum;
-            weightB /= sum;
+            validWeights.fill(1 / validVectors.length);
+            weightSum = 1;
         }
         
-        const dimension = vecA.length;
-        const result = new Array(dimension);
-        
-        for (let i = 0; i < dimension; i++) {
-            result[i] = (vecA[i] * weightA) + (vecB[i] * weightB);
+        const normalizedWeights = validWeights.map(w => w / weightSum);
+        const dimension = validVectors[0].length;
+        const result = new Array(dimension).fill(0);
+
+        // 3. 计算加权平均值
+        for (let i = 0; i < validVectors.length; i++) {
+            const vector = validVectors[i];
+            const weight = normalizedWeights[i];
+            if (vector.length !== dimension) {
+                 console.error('[RAGDiaryPlugin] Vector dimensions do not match. Skipping mismatched vector.');
+                 continue;
+            }
+            for (let j = 0; j < dimension; j++) {
+                result[j] += vector[j] * weight;
+            }
         }
         
         return result;
@@ -1209,34 +1217,36 @@ class RAGDiaryPlugin {
      * @returns {Promise<string>} 返回完整的、带有新元数据的新区块文本
      */
     async refreshRagBlock(metadata, contextData) {
-        console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块 (8:2 权重)...`);
+        console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块 (U:0.5, A:0.35, T:0.15 权重)...`);
         const { lastAiMessage, toolResultsText } = contextData;
+        const originalUserQuery = metadata.originalQuery || '';
 
-        // 1. 分别净化 AI 意图和工具结果
+        // 1. 分别净化用户、AI 和工具的内容
+        const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery));
         const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
         const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolResultsText || ''));
 
-        // 2. 分别获取向量
-        const aiVector = sanitizedAiContent ? await this.getSingleEmbeddingCached(sanitizedAiContent) : null;
-        const toolVector = sanitizedToolContent ? await this.getSingleEmbeddingCached(sanitizedToolContent) : null;
+        // 2. 并行获取所有向量
+        const [userVector, aiVector, toolVector] = await Promise.all([
+            sanitizedUserContent ? this.getSingleEmbeddingCached(sanitizedUserContent) : null,
+            sanitizedAiContent ? this.getSingleEmbeddingCached(sanitizedAiContent) : null,
+            sanitizedToolContent ? this.getSingleEmbeddingCached(sanitizedToolContent) : null
+        ]);
 
-        // 3. 按 8:2 权重合并向量
-        let queryVector = null;
-        if (aiVector && toolVector) {
-            console.log('[VCP Refresh] 合并 AI 意图向量和工具结果向量 (权重 0.8 : 0.2)');
-            queryVector = this._getWeightedAverageVector([aiVector, toolVector], [0.8, 0.2]);
-        } else {
-            queryVector = aiVector || toolVector; // 如果有一个为空，则使用另一个
-        }
+        // 3. 按 0.5:0.35:0.15 权重合并向量
+        const vectors = [userVector, aiVector, toolVector];
+        const weights = [0.5, 0.35, 0.15];
+        console.log('[VCP Refresh] 合并用户、AI意图和工具结果向量 (权重 0.5 : 0.35 : 0.15)');
+        const queryVector = this._getWeightedAverageVector(vectors, weights);
 
         if (!queryVector) {
-            const combinedForError = `${sanitizedAiContent} ${sanitizedToolContent}`;
+            const combinedForError = `${sanitizedUserContent} ${sanitizedAiContent} ${sanitizedToolContent}`;
             console.error(`[VCP Refresh] 记忆刷新失败: 无法向量化新的上下文: "${combinedForError.substring(0, 100)}..."`);
             return `[记忆刷新失败: 无法向量化新的上下文]`;
         }
 
         // 4. 准备用于日志记录和时间解析的组合文本
-        const combinedSanitizedContext = `[AI]: ${sanitizedAiContent}\n[Tool]: ${sanitizedToolContent}`;
+        const combinedSanitizedContext = `[User]: ${sanitizedUserContent}\n[AI]: ${sanitizedAiContent}\n[Tool]: ${sanitizedToolContent}`;
 
         // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
         const refreshedContent = await this._processRAGPlaceholder({
