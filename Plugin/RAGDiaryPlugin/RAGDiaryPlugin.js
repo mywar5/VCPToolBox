@@ -9,6 +9,7 @@ const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
 const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
 const AIMemoHandler = require('./AIMemoHandler.js'); // <--- 新增：引入AIMemoHandler
+const { chunkText } = require('../../TextChunker.js'); // <--- 新增：引入文本分块器
 
 const dayjs = require('dayjs');
 const utc = require('dayjs/plugin/utc');
@@ -1904,37 +1905,61 @@ class RAGDiaryPlugin {
             console.error('[RAGDiaryPlugin] getSingleEmbedding was called with no text.');
             return null;
         }
-
+    
         const apiKey = process.env.API_Key;
         const apiUrl = process.env.API_URL;
         const embeddingModel = process.env.WhitelistEmbeddingModel;
-
+    
         if (!apiKey || !apiUrl || !embeddingModel) {
             console.error('[RAGDiaryPlugin] Embedding API credentials or model is not configured in environment variables.');
             return null;
         }
-
+    
+        // 1. 使用 TextChunker 分割文本以避免超长
+        const textChunks = chunkText(text);
+        if (!textChunks || textChunks.length === 0) {
+            console.log('[RAGDiaryPlugin] Text chunking resulted in no chunks.');
+            return null;
+        }
+        
+        if (textChunks.length > 1) {
+            console.log(`[RAGDiaryPlugin] Text is too long, split into ${textChunks.length} chunks for embedding.`);
+        }
+    
         const maxRetries = 3;
         const retryDelay = 1000; // 1 second
-
+    
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const response = await axios.post(`${apiUrl}/v1/embeddings`, {
                     model: embeddingModel,
-                    input: [text]
+                    input: textChunks // 传入所有文本块
                 }, {
                     headers: {
                         'Authorization': `Bearer ${apiKey}`,
                         'Content-Type': 'application/json'
                     }
                 });
-
-                const vector = response.data?.data?.[0]?.embedding;
-                if (!vector) {
-                    console.error('[RAGDiaryPlugin] Valid embedding vector was not found in the API response.');
-                    return null; // Do not retry on valid response with no vector
+    
+                const embeddings = response.data?.data;
+                if (!embeddings || embeddings.length === 0) {
+                    console.error('[RAGDiaryPlugin] No embeddings found in the API response.');
+                    return null;
                 }
-                return vector;
+    
+                const vectors = embeddings.map(e => e.embedding).filter(Boolean);
+                if (vectors.length === 0) {
+                    console.error('[RAGDiaryPlugin] No valid embedding vectors in the API response data.');
+                    return null;
+                }
+    
+                // 如果只有一个向量，直接返回；否则，计算平均向量
+                if (vectors.length === 1) {
+                    return vectors[0];
+                } else {
+                    console.log(`[RAGDiaryPlugin] Averaging ${vectors.length} vectors into one.`);
+                    return this._getAverageVector(vectors);
+                }
             } catch (error) {
                 const status = error.response ? error.response.status : null;
                 
@@ -1943,7 +1968,7 @@ class RAGDiaryPlugin {
                     await new Promise(resolve => setTimeout(resolve, retryDelay));
                     continue;
                 }
-
+    
                 if (error.response) {
                     console.error(`[RAGDiaryPlugin] Embedding API call failed with status ${status}: ${JSON.stringify(error.response.data)}`);
                 } else if (error.request) {
