@@ -1,4 +1,4 @@
-// Plugin/MessagePreprocessor/RAGDiaryPlugin/index.js
+// Plugin/MessagePreprocessor/RAGDiaryPlugin/RAGDiaryPlugin.js
 
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -1202,6 +1202,50 @@ class RAGDiaryPlugin {
         return kMultiplierMatch ? parseFloat(kMultiplierMatch[1]) : 1.0;
     }
 
+    /**
+     * 刷新一个RAG区块
+     * @param {object} metadata - 从HTML注释中解析出的元数据 {dbName, modifiers, k, originalQuery}
+     * @param {string} newQueryContext - 工具返回的最新结果文本，用于生成新的查询向量
+     * @returns {Promise<string>} 返回完整的、带有新元数据的新区块文本
+     */
+    async refreshRagBlock(metadata, newQueryContext) {
+        console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块...`);
+        
+        // ✅ 新增：在向量化之前，对新的查询上下文进行净化，确保与主流程一致
+        const originalContextLength = newQueryContext.length;
+        let sanitizedQueryContext = this._stripHtml(newQueryContext);
+        sanitizedQueryContext = this._stripEmoji(sanitizedQueryContext);
+        if (sanitizedQueryContext.length !== originalContextLength) {
+            console.log('[VCP Refresh] 新的查询上下文已被净化 (HTML/Emoji removed)。');
+        }
+
+        // 1. 基于净化后的 newQueryContext 生成新的查询向量
+        const queryVector = await this.getSingleEmbeddingCached(sanitizedQueryContext);
+        if (!queryVector) {
+            console.error(`[VCP Refresh] 记忆刷新失败: 无法向量化新的上下文: "${sanitizedQueryContext.substring(0, 100)}..."`);
+            return `[记忆刷新失败: 无法向量化新的上下文]`;
+        }
+
+        // 2. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
+        // 注意：我们传递净化后的查询上下文作为 userContent，因为它代表了当前的用户意图
+        const refreshedContent = await this._processRAGPlaceholder({
+            dbName: metadata.dbName,
+            modifiers: metadata.modifiers,
+            queryVector: queryVector,
+            userContent: sanitizedQueryContext, // ✅ 使用净化后的上下文
+            aiContent: null, // 刷新时，我们只关心新的上下文，不依赖旧的AI回复
+            combinedQueryForDisplay: sanitizedQueryContext, // ✅ 使用净化后的上下文
+            dynamicK: metadata.k || 5, // 使用元数据中记录的k值，或提供一个默认值
+            timeRanges: this.timeParser.parse(sanitizedQueryContext), // ✅ 基于净化后的上下文重新解析时间
+            allowTimeAndGroup: true
+        });
+
+        // 3. 返回完整的、带有新元数据的新区块文本
+        // 注意：新区块的 originalQuery 元数据应更新为 newQueryContext
+        // （这一步已在 _processRAGPlaceholder 内部通过 format 函数实现，因为它会基于新的 userContent 生成元数据）
+        return refreshedContent;
+    }
+
     async _processRAGPlaceholder(options) {
         const {
             dbName,
@@ -1255,6 +1299,14 @@ class RAGDiaryPlugin {
         const kForSearch = useRerank
             ? Math.max(1, Math.round(finalK * this.rerankConfig.multiplier))
             : finalK;
+        
+        // 准备元数据用于生成自描述区块
+        const metadata = {
+            dbName: dbName,
+            modifiers: modifiers,
+            k: finalK,
+            originalQuery: userContent // 保存原始查询
+        };
 
         let retrievedContent = '';
         let finalQueryVector = queryVector;
@@ -1296,7 +1348,7 @@ class RAGDiaryPlugin {
             }
 
             finalResultsForBroadcast = Array.from(allEntries.values());
-            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName);
+            retrievedContent = this.formatCombinedTimeAwareResults(finalResultsForBroadcast, timeRanges, dbName, metadata);
 
         } else {
             // --- Standard path (no time filter) ---
@@ -1310,9 +1362,9 @@ class RAGDiaryPlugin {
             finalResultsForBroadcast = searchResults.map(r => ({ ...r, source: 'rag' }));
 
             if (useGroup) {
-                retrievedContent = this.formatGroupRAGResults(searchResults, displayName, activatedGroups);
+                retrievedContent = this.formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata);
             } else {
-                retrievedContent = this.formatStandardResults(searchResults, displayName);
+                retrievedContent = this.formatStandardResults(searchResults, displayName, metadata);
             }
         }
         
@@ -1680,78 +1732,83 @@ class RAGDiaryPlugin {
         return diariesInRange;
     }
 
-    formatStandardResults(searchResults, displayName) {
-        let content = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
+    formatStandardResults(searchResults, displayName, metadata) {
+        let innerContent = `\n[--- 从"${displayName}"中检索到的相关记忆片段 ---]\n`;
         if (searchResults && searchResults.length > 0) {
-            content += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
         } else {
-            content += "没有找到直接相关的记忆片段。";
+            innerContent += "没有找到直接相关的记忆片段。";
         }
-        content += `\n[--- 记忆片段结束 ---]\n`;
-        return content;
+        innerContent += `\n[--- 记忆片段结束 ---]\n`;
+
+        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
+        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
     }
 
-    formatCombinedTimeAwareResults(results, timeRanges, dbName) {
+    formatCombinedTimeAwareResults(results, timeRanges, dbName, metadata) {
         const displayName = dbName + '日记本';
         const formatDate = (date) => {
             const d = new Date(date);
             return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
         }
     
-        let content = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
+        let innerContent = `\n[--- "${displayName}" 多时间感知检索结果 ---]\n`;
         
         const formattedRanges = timeRanges.map(tr => `"${formatDate(tr.start)} ~ ${formatDate(tr.end)}"`).join(' 和 ');
-        content += `[合并查询的时间范围: ${formattedRanges}]\n`;
+        innerContent += `[合并查询的时间范围: ${formattedRanges}]\n`;
     
         const ragEntries = results.filter(e => e.source === 'rag');
         const timeEntries = results.filter(e => e.source === 'time');
         
-        content += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条)]\n\n`;
+        innerContent += `[统计: 共找到 ${results.length} 条不重复记忆 (语义相关 ${ragEntries.length}条, 时间范围 ${timeEntries.length}条)]\n\n`;
     
         if (ragEntries.length > 0) {
-            content += '【语义相关记忆】\n';
+            innerContent += '【语义相关记忆】\n';
             ragEntries.forEach(entry => {
                 const dateMatch = entry.text.match(/^\[(\d{4}-\d{2}-\d{2})\]/);
                 const datePrefix = dateMatch ? `[${dateMatch[1]}] ` : '';
-                content += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                innerContent += `* ${datePrefix}${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
             });
         }
     
         if (timeEntries.length > 0) {
-            content += '\n【时间范围记忆】\n';
+            innerContent += '\n【时间范围记忆】\n';
             // 按日期从新到旧排序
             timeEntries.sort((a, b) => new Date(b.date) - new Date(a.date));
             timeEntries.forEach(entry => {
-                content += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
+                innerContent += `* [${entry.date}] ${entry.text.replace(/^\[.*?\]\s*-\s*.*?\n?/, '').trim()}\n`;
             });
         }
     
-        content += `[--- 检索结束 ---]\n`;
-        return content;
+        innerContent += `[--- 检索结束 ---]\n`;
+        
+        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
+        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
     }
 
-    formatGroupRAGResults(searchResults, displayName, activatedGroups) {
-        let content = `\n[--- "${displayName}" 语义组增强检索结果 ---]\n`;
+    formatGroupRAGResults(searchResults, displayName, activatedGroups, metadata) {
+        let innerContent = `\n[--- "${displayName}" 语义组增强检索结果 ---]\n`;
         
         if (activatedGroups && activatedGroups.size > 0) {
-            content += `[激活的语义组:]\n`;
+            innerContent += `[激活的语义组:]\n`;
             for (const [groupName, data] of activatedGroups) {
-                content += `  • ${groupName} (${(data.strength * 100).toFixed(0)}%激活): 匹配到 "${data.matchedWords.join(', ')}"\n`;
+                innerContent += `  • ${groupName} (${(data.strength * 100).toFixed(0)}%激活): 匹配到 "${data.matchedWords.join(', ')}"\n`;
             }
-            content += '\n';
+            innerContent += '\n';
         } else {
-            content += `[未激活特定语义组]\n\n`;
+            innerContent += `[未激活特定语义组]\n\n`;
         }
         
-        content += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
+        innerContent += `[检索到 ${searchResults ? searchResults.length : 0} 条相关记忆]\n`;
         if (searchResults && searchResults.length > 0) {
-            content += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
+            innerContent += searchResults.map(r => `* ${r.text.trim()}`).join('\n');
         } else {
-            content += "没有找到直接相关的记忆片段。";
+            innerContent += "没有找到直接相关的记忆片段。";
         }
-        content += `\n[--- 检索结束 ---]\n`;
+        innerContent += `\n[--- 检索结束 ---]\n`;
         
-        return content;
+        const metadataString = JSON.stringify(metadata).replace(/-->/g, '--\\>');
+        return `<!-- VCP_RAG_BLOCK_START ${metadataString} -->${innerContent}<!-- VCP_RAG_BLOCK_END -->`;
     }
 
     // Helper for token estimation
