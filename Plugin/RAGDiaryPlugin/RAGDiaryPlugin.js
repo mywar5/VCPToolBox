@@ -1208,41 +1208,50 @@ class RAGDiaryPlugin {
      * @param {string} newQueryContext - 工具返回的最新结果文本，用于生成新的查询向量
      * @returns {Promise<string>} 返回完整的、带有新元数据的新区块文本
      */
-    async refreshRagBlock(metadata, newQueryContext) {
-        console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块...`);
-        
-        // ✅ 新增：在向量化之前，对新的查询上下文进行净化，确保与主流程一致
-        const originalContextLength = newQueryContext.length;
-        let sanitizedQueryContext = this._stripHtml(newQueryContext);
-        sanitizedQueryContext = this._stripEmoji(sanitizedQueryContext);
-        if (sanitizedQueryContext.length !== originalContextLength) {
-            console.log('[VCP Refresh] 新的查询上下文已被净化 (HTML/Emoji removed)。');
+    async refreshRagBlock(metadata, contextData) {
+        console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块 (8:2 权重)...`);
+        const { lastAiMessage, toolResultsText } = contextData;
+
+        // 1. 分别净化 AI 意图和工具结果
+        const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
+        const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolResultsText || ''));
+
+        // 2. 分别获取向量
+        const aiVector = sanitizedAiContent ? await this.getSingleEmbeddingCached(sanitizedAiContent) : null;
+        const toolVector = sanitizedToolContent ? await this.getSingleEmbeddingCached(sanitizedToolContent) : null;
+
+        // 3. 按 8:2 权重合并向量
+        let queryVector = null;
+        if (aiVector && toolVector) {
+            console.log('[VCP Refresh] 合并 AI 意图向量和工具结果向量 (权重 0.8 : 0.2)');
+            queryVector = this._getWeightedAverageVector([aiVector, toolVector], [0.8, 0.2]);
+        } else {
+            queryVector = aiVector || toolVector; // 如果有一个为空，则使用另一个
         }
 
-        // 1. 基于净化后的 newQueryContext 生成新的查询向量
-        const queryVector = await this.getSingleEmbeddingCached(sanitizedQueryContext);
         if (!queryVector) {
-            console.error(`[VCP Refresh] 记忆刷新失败: 无法向量化新的上下文: "${sanitizedQueryContext.substring(0, 100)}..."`);
+            const combinedForError = `${sanitizedAiContent} ${sanitizedToolContent}`;
+            console.error(`[VCP Refresh] 记忆刷新失败: 无法向量化新的上下文: "${combinedForError.substring(0, 100)}..."`);
             return `[记忆刷新失败: 无法向量化新的上下文]`;
         }
 
-        // 2. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
-        // 注意：我们传递净化后的查询上下文作为 userContent，因为它代表了当前的用户意图
+        // 4. 准备用于日志记录和时间解析的组合文本
+        const combinedSanitizedContext = `[AI]: ${sanitizedAiContent}\n[Tool]: ${sanitizedToolContent}`;
+
+        // 5. 复用 _processRAGPlaceholder 的逻辑来获取刷新后的内容
         const refreshedContent = await this._processRAGPlaceholder({
             dbName: metadata.dbName,
             modifiers: metadata.modifiers,
-            queryVector: queryVector,
-            userContent: sanitizedQueryContext, // ✅ 使用净化后的上下文
-            aiContent: null, // 刷新时，我们只关心新的上下文，不依赖旧的AI回复
-            combinedQueryForDisplay: sanitizedQueryContext, // ✅ 使用净化后的上下文
-            dynamicK: metadata.k || 5, // 使用元数据中记录的k值，或提供一个默认值
-            timeRanges: this.timeParser.parse(sanitizedQueryContext), // ✅ 基于净化后的上下文重新解析时间
+            queryVector: queryVector, // ✅ 使用加权后的向量
+            userContent: combinedSanitizedContext, // ✅ 使用组合后的上下文进行内容处理
+            aiContent: null,
+            combinedQueryForDisplay: combinedSanitizedContext, // ✅ 使用组合后的上下文进行显示
+            dynamicK: metadata.k || 5,
+            timeRanges: this.timeParser.parse(combinedSanitizedContext), // ✅ 基于组合后的上下文重新解析时间
             allowTimeAndGroup: true
         });
 
-        // 3. 返回完整的、带有新元数据的新区块文本
-        // 注意：新区块的 originalQuery 元数据应更新为 newQueryContext
-        // （这一步已在 _processRAGPlaceholder 内部通过 format 函数实现，因为它会基于新的 userContent 生成元数据）
+        // 6. 返回完整的、带有新元数据的新区块文本
         return refreshedContent;
     }
 

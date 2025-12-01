@@ -1055,8 +1055,7 @@ class ChatCompletionHandler {
           // --- VCP RAG 刷新注入点 (流式) ---
           const toolResultsText = JSON.stringify(combinedToolResultsForAI);
           const lastAiMessage = currentAIContentForLoop;
-          const newQueryContext = `[AI的思考与意图]:\n${lastAiMessage}\n\n[工具返回的客观结果]:\n${toolResultsText}`;
-          currentMessagesForLoop = await _refreshRagBlocksIfNeeded(currentMessagesForLoop, newQueryContext, pluginManager, DEBUG_MODE);
+          currentMessagesForLoop = await _refreshRagBlocksIfNeeded(currentMessagesForLoop, { lastAiMessage, toolResultsText }, pluginManager, DEBUG_MODE);
           // --- 注入点结束 ---
 
           currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
@@ -1571,8 +1570,7 @@ class ChatCompletionHandler {
             // --- VCP RAG 刷新注入点 (非流式) ---
             const toolResultsText = JSON.stringify(combinedToolResultsForAI);
             const lastAiMessage = currentAIContentForLoop;
-            const newQueryContext = `[AI的思考与意图]:\n${lastAiMessage}\n\n[工具返回的客观结果]:\n${toolResultsText}`;
-            currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, newQueryContext, pluginManager, DEBUG_MODE);
+            currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, { lastAiMessage, toolResultsText }, pluginManager, DEBUG_MODE);
             // --- 注入点结束 ---
 
             currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
