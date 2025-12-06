@@ -681,8 +681,11 @@ class RAGDiaryPlugin {
         $('style, script').remove();
         const plainText = $.text();
         
-        // 2. 将连续的换行符（两个或更多）替换为单个换行符，并移除首尾空白，以减少噪音
-        return plainText.replace(/\n{2,}/g, '\n').trim();
+        // 3. 移除每行开头的空格，并将多个连续换行符压缩为最多两个，以保留段落分隔
+        return plainText
+            .replace(/^[ \t]+/gm, '') // 移除每行开头的空格和制表符
+            .replace(/\n{3,}/g, '\n\n') // 将三个及以上的换行符压缩为两个
+            .trim(); // 移除整个字符串首尾的空白
     }
 
     _stripEmoji(text) {
