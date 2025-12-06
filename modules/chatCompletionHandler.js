@@ -116,8 +116,27 @@ async function _refreshRagBlocksIfNeeded(messages, newContext, pluginManager, de
                             console.log(`[VCP Refresh] 正在刷新区块 (${metadata.dbName})...`);
                         }
 
-                        // 调用 RAG 插件的刷新接口
-                        const newBlock = await ragPlugin.refreshRagBlock(metadata, newContext);
+                        // V4.0: Find the last *true* user message to use as the original query
+                        let originalUserQuery = '';
+                        // Search backwards from the message *before* the one containing the RAG block
+                        for (let j = i - 1; j >= 0; j--) {
+                            const prevMsg = newMessages[j];
+                            if (prevMsg.role === 'user' && typeof prevMsg.content === 'string' &&
+                                !prevMsg.content.startsWith('<!-- VCP_TOOL_PAYLOAD -->') &&
+                                !prevMsg.content.startsWith('[系统提示:]') &&
+                                !prevMsg.content.startsWith('[系统邀请指令:]')
+                            ) {
+                                originalUserQuery = prevMsg.content;
+                                if (debugMode) console.log(`[VCP Refresh] Found original user query for refresh at index ${j}.`);
+                                break; // Found it, stop searching
+                            }
+                        }
+                        if (!originalUserQuery && debugMode) {
+                            console.warn(`[VCP Refresh] Could not find a true user query for the RAG block at index ${i}. Refresh may be inaccurate.`);
+                        }
+
+                        // 调用 RAG 插件的刷新接口, now with originalUserQuery
+                        const newBlock = await ragPlugin.refreshRagBlock(metadata, newContext, originalUserQuery);
                         
                         // 🟢 改进点4：关键修复！使用回调函数进行替换，防止 newBlock 中的 "$" 符号被解析为正则特殊字符
                         // 这是一个极其常见的 Bug，导致包含 $ 的内容（如公式、代码）替换失败或乱码
@@ -1052,13 +1071,16 @@ class ChatCompletionHandler {
           const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
           await writeDebugLog('LogToolResultForAI-Stream', { role: 'user', content: combinedToolResultsForAI });
           
-          // --- VCP RAG 刷新注入点 (流式) ---
+          // V4.0: Create a unified tool payload with a hidden marker
           const toolResultsText = JSON.stringify(combinedToolResultsForAI);
+          const toolPayloadForAI = `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsText}`;
+
+          // --- VCP RAG 刷新注入点 (流式) ---
           const lastAiMessage = currentAIContentForLoop;
           currentMessagesForLoop = await _refreshRagBlocksIfNeeded(currentMessagesForLoop, { lastAiMessage, toolResultsText }, pluginManager, DEBUG_MODE);
           // --- 注入点结束 ---
 
-          currentMessagesForLoop.push({ role: 'user', content: combinedToolResultsForAI });
+          currentMessagesForLoop.push({ role: 'user', content: toolPayloadForAI });
           if (DEBUG_MODE)
             console.log(
               '[VCP Stream Loop] Combined tool results for next AI call (first 200):',
@@ -1567,13 +1589,16 @@ class ChatCompletionHandler {
             const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
             await writeDebugLog('LogToolResultForAI-NonStream', { role: 'user', content: combinedToolResultsForAI });
             
-            // --- VCP RAG 刷新注入点 (非流式) ---
+            // V4.0: Create a unified tool payload with a hidden marker
             const toolResultsText = JSON.stringify(combinedToolResultsForAI);
+            const toolPayloadForAI = `<!-- VCP_TOOL_PAYLOAD -->\n${toolResultsText}`;
+
+            // --- VCP RAG 刷新注入点 (非流式) ---
             const lastAiMessage = currentAIContentForLoop;
             currentMessagesForNonStreamLoop = await _refreshRagBlocksIfNeeded(currentMessagesForNonStreamLoop, { lastAiMessage, toolResultsText }, pluginManager, DEBUG_MODE);
             // --- 注入点结束 ---
 
-            currentMessagesForNonStreamLoop.push({ role: 'user', content: combinedToolResultsForAI });
+            currentMessagesForNonStreamLoop.push({ role: 'user', content: toolPayloadForAI });
 
             // Fetch the next AI response
             if (DEBUG_MODE) console.log('[Multi-Tool] Fetching next AI response after processing tools.');

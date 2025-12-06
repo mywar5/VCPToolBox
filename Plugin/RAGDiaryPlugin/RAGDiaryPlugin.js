@@ -677,6 +677,8 @@ class RAGDiaryPlugin {
         }
         // 1. 使用 cheerio 加载 HTML 并提取纯文本
         const $ = cheerio.load(html);
+        // 关键修复：在提取文本之前，显式移除 style 和 script 标签
+        $('style, script').remove();
         const plainText = $.text();
         
         // 2. 将连续的换行符（两个或更多）替换为单个换行符，并移除首尾空白，以减少噪音
@@ -1212,17 +1214,17 @@ class RAGDiaryPlugin {
 
     /**
      * 刷新一个RAG区块
-     * @param {object} metadata - 从HTML注释中解析出的元数据 {dbName, modifiers, k, originalQuery}
-     * @param {string} newQueryContext - 工具返回的最新结果文本，用于生成新的查询向量
+     * @param {object} metadata - 从HTML注释中解析出的元数据 {dbName, modifiers, k}
+     * @param {object} contextData - 包含最新上下文的对象 { lastAiMessage, toolResultsText }
+     * @param {string} originalUserQuery - 从 chatCompletionHandler 回溯找到的真实用户查询
      * @returns {Promise<string>} 返回完整的、带有新元数据的新区块文本
      */
-    async refreshRagBlock(metadata, contextData) {
+    async refreshRagBlock(metadata, contextData, originalUserQuery) {
         console.log(`[VCP Refresh] 正在刷新 "${metadata.dbName}" 的记忆区块 (U:0.5, A:0.35, T:0.15 权重)...`);
         const { lastAiMessage, toolResultsText } = contextData;
-        const originalUserQuery = metadata.originalQuery || '';
-
+        
         // 1. 分别净化用户、AI 和工具的内容
-        const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery));
+        const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery || ''));
         const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
         const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolResultsText || ''));
 
@@ -1323,8 +1325,8 @@ class RAGDiaryPlugin {
         const metadata = {
             dbName: dbName,
             modifiers: modifiers,
-            k: finalK,
-            originalQuery: userContent // 保存原始查询
+            k: finalK
+            // V4.0: originalQuery has been removed to save tokens.
         };
 
         let retrievedContent = '';
