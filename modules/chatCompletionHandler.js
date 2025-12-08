@@ -1089,7 +1089,22 @@ class ChatCompletionHandler {
 
           // --- Make next AI call (stream: true) ---
           if (!res.writableEnded) {
-            res.write('\n'); // 在下一个AI响应开始前，向客户端发送一个换行符
+            const sepChunk = {
+              id: `chatcmpl-VCP-separator-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: originalBody.model,
+              choices: [
+                {
+                  index: 0,
+                  delta: {
+                    content: '\n',  // 或者 '---\n'
+                  },
+                  finish_reason: null,
+                },
+              ],
+            };
+            res.write(`data: ${JSON.stringify(sepChunk)}\n\n`);
           }
           if (DEBUG_MODE) console.log('[VCP Stream Loop] Fetching next AI response.');
           const nextAiAPIResponse = await fetchWithRetry(
