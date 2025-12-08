@@ -4,6 +4,7 @@ const vcpInfoHandler = require('../vcpInfoHandler.js');
 const fs = require('fs').promises;
 const path = require('path');
 const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
+const { StringDecoder } = require('string_decoder'); // 修复中文编码截断问题
 
 async function getRealAuthCode(debugMode = false) {
   try {
@@ -456,6 +457,7 @@ class ChatCompletionHandler {
         // Helper function to process an AI response stream
         async function processAIResponseStreamHelper(aiResponse, isInitialCall) {
           return new Promise((resolve, reject) => {
+            const decoder = new StringDecoder('utf8'); // 修复中文编码截断问题：初始化解码器
             let sseBuffer = ''; // Buffer for incomplete SSE lines
             let collectedContentThisTurn = ''; // Collects textual content from delta
             let rawResponseDataThisTurn = ''; // Collects all raw chunks for diary
@@ -483,7 +485,9 @@ class ChatCompletionHandler {
             aiResponse.body.on('data', chunk => {
               // 修复 Bug #5: 如果已中止，忽略后续数据
               if (streamAborted) return;
-              const chunkString = chunk.toString('utf-8');
+              
+              // 修复中文编码截断问题：使用 decoder.write 代替 chunk.toString
+              const chunkString = decoder.write(chunk);
               rawResponseDataThisTurn += chunkString;
               sseLineBuffer += chunkString;
 
@@ -517,7 +521,15 @@ class ChatCompletionHandler {
 
             // Process any remaining data in the buffer on stream end
             aiResponse.body.on('end', () => {
+              // 修复中文编码截断问题：确保将解码器中剩余的字节也输出
+              const remainingString = decoder.end();
+              if (remainingString) {
+                sseLineBuffer += remainingString;
+                rawResponseDataThisTurn += remainingString;
+              }
+
               if (sseLineBuffer.trim()) {
+                // 注意：这里用 Buffer.from 是安全的，因为 sseLineBuffer 已经是完整的 JS 字符串了
                 const modifiedChunk = Buffer.from(sseLineBuffer, 'utf-8');
                 processChunk(modifiedChunk);
               }
