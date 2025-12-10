@@ -1,4 +1,7 @@
 
+// 冻结原型链，防止原型链污染攻击
+Object.freeze(Object.prototype);
+
 // Plugin/ImageServer/image-server.js
 const express = require('express');
 const path = require('path');
@@ -340,7 +343,8 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
     const staticMiddleware = express.static(rootDir, {
         dotfiles: 'deny',
         index: false,
-        redirect: false
+        redirect: false,
+        follow: false // 禁止跟随软链接，防止软链接攻击
     });
 
     return (req, res, next) => {
