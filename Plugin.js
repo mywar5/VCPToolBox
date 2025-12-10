@@ -60,24 +60,20 @@ class PluginManager {
 
     _getPluginConfig(pluginManifest) {
         const config = {};
-        const globalEnv = process.env;
-        const pluginSpecificEnv = pluginManifest.pluginSpecificEnvConfig || {};
+        const globalEnv = process.env; 
+        const pluginSpecificEnv = pluginManifest.pluginSpecificEnvConfig || {}; 
 
         if (pluginManifest.configSchema) {
             for (const key in pluginManifest.configSchema) {
-                const schemaEntry = pluginManifest.configSchema[key];
-                // 兼容两种格式：对象格式 { type: "string", ... } 和简单字符串格式 "string"
-                const expectedType = (typeof schemaEntry === 'object' && schemaEntry !== null)
-                    ? schemaEntry.type
-                    : schemaEntry;
+                const expectedType = pluginManifest.configSchema[key];
                 let rawValue;
 
-                if (pluginSpecificEnv.hasOwnProperty(key)) {
+                if (pluginSpecificEnv.hasOwnProperty(key)) { 
                     rawValue = pluginSpecificEnv[key];
-                } else if (globalEnv.hasOwnProperty(key)) {
+                } else if (globalEnv.hasOwnProperty(key)) { 
                     rawValue = globalEnv[key];
                 } else {
-                    continue;
+                    continue; 
                 }
 
                 let value = rawValue;
