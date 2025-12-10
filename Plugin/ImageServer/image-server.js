@@ -336,6 +336,13 @@ function createAuthMiddleware(getKey, serviceType) {
  * 创建安全的静态文件服务中间件
  */
 function createSecureStaticMiddleware(rootDir, serviceType) {
+    // 创建express.static中间件实例
+    const staticMiddleware = express.static(rootDir, {
+        dotfiles: 'deny',
+        index: false,
+        redirect: false
+    });
+
     return (req, res, next) => {
         const requestedFile = req.path;
         const fullPath = path.join(rootDir, requestedFile);
@@ -349,35 +356,12 @@ function createSecureStaticMiddleware(rootDir, serviceType) {
             return res.status(403).type('text/plain').send('Forbidden: Access denied.');
         }
 
-        // 检查文件是否存在
-        fs.access(normalizedPath, fs.constants.F_OK, (err) => {
-            if (err) {
-                if (pluginDebugMode) {
-                    console.log(`[SecureStatic] 文件不存在: ${normalizedPath}`);
-                }
-                return res.status(404).type('text/plain').send('File not found.');
-            }
+        if (pluginDebugMode) {
+            console.log(`[SecureStatic] 安全检查通过，请求文件: ${requestedFile}`);
+        }
 
-            // 检查文件大小
-            fs.stat(normalizedPath, (err, stats) => {
-                if (err) {
-                    console.error(`[SecureStatic] 文件状态检查失败: ${err.message}`);
-                    return res.status(500).type('text/plain').send('Internal server error.');
-                }
-
-                if (stats.size > SECURITY_CONFIG.MAX_FILE_SIZE) {
-                    console.warn(`[SecureStatic] 🚨 文件过大被拒绝: ${stats.size} bytes from IP: ${req.ip}`);
-                    return res.status(413).type('text/plain').send('File too large.');
-                }
-
-                // 使用express.static提供文件，但限制在安全路径内
-                express.static(rootDir, {
-                    dotfiles: 'deny',
-                    index: false,
-                    redirect: false
-                })(req, res, next);
-            });
-        });
+        // 直接使用express.static中间件
+        staticMiddleware(req, res, next);
     };
 }
 
