@@ -1851,7 +1851,38 @@ class RAGDiaryPlugin {
             console.warn('[RAGDiaryPlugin] Rerank called, but is not configured. Skipping.');
             return documents.slice(0, originalK);
         }
-        // Rerank开始（静默）
+
+        // ✅ 新增：断路器模式防止循环调用
+        const circuitBreakerKey = `rerank_${Date.now()}`;
+        if (!this.rerankCircuitBreaker) {
+            this.rerankCircuitBreaker = new Map();
+        }
+        
+        // 检查是否在短时间内有太多失败
+        const now = Date.now();
+        const recentFailures = Array.from(this.rerankCircuitBreaker.entries())
+            .filter(([key, timestamp]) => now - timestamp < 60000) // 1分钟内
+            .length;
+            
+        if (recentFailures >= 5) {
+            console.warn('[RAGDiaryPlugin] Rerank circuit breaker activated due to recent failures. Skipping rerank.');
+            return documents.slice(0, originalK);
+        }
+
+        // ✅ 新增：查询截断机制防止"Query is too long"错误
+        const maxQueryTokens = Math.floor(this.rerankConfig.maxTokens * 0.3); // 预留70%给文档
+        let truncatedQuery = query;
+        let queryTokens = this._estimateTokens(query);
+        
+        if (queryTokens > maxQueryTokens) {
+            console.warn(`[RAGDiaryPlugin] Query too long (${queryTokens} tokens), truncating to ${maxQueryTokens} tokens`);
+            // 简单截断：按字符比例截断
+            const truncateRatio = maxQueryTokens / queryTokens;
+            const targetLength = Math.floor(query.length * truncateRatio * 0.9); // 留10%安全边距
+            truncatedQuery = query.substring(0, targetLength) + '...';
+            queryTokens = this._estimateTokens(truncatedQuery);
+            console.log(`[RAGDiaryPlugin] Query truncated to ${queryTokens} tokens`);
+        }
 
         const rerankUrl = new URL('v1/rerank', this.rerankConfig.url).toString();
         const headers = {
@@ -1859,15 +1890,24 @@ class RAGDiaryPlugin {
             'Content-Type': 'application/json',
         };
         const maxTokens = this.rerankConfig.maxTokens;
-        const queryTokens = this._estimateTokens(query);
 
+        // ✅ 优化批次处理逻辑
         let batches = [];
         let currentBatch = [];
         let currentTokens = queryTokens;
+        const minBatchSize = 1; // 确保每个批次至少有1个文档
+        const maxBatchTokens = maxTokens - queryTokens - 1000; // 预留1000 tokens安全边距
 
         for (const doc of documents) {
             const docTokens = this._estimateTokens(doc.text);
-            if (currentTokens + docTokens > maxTokens && currentBatch.length > 0) {
+            
+            // 如果单个文档就超过限制，跳过该文档
+            if (docTokens > maxBatchTokens) {
+                console.warn(`[RAGDiaryPlugin] Document too large (${docTokens} tokens), skipping`);
+                continue;
+            }
+            
+            if (currentTokens + docTokens > maxBatchTokens && currentBatch.length >= minBatchSize) {
                 // Current batch is full, push it and start a new one
                 batches.push(currentBatch);
                 currentBatch = [doc];
@@ -1878,14 +1918,23 @@ class RAGDiaryPlugin {
                 currentTokens += docTokens;
             }
         }
+        
         // Add the last batch if it's not empty
         if (currentBatch.length > 0) {
             batches.push(currentBatch);
         }
 
-        // 文档已分批（静默）
+        // 如果没有有效批次，直接返回原始文档
+        if (batches.length === 0) {
+            console.warn('[RAGDiaryPlugin] No valid batches for reranking, returning original documents');
+            return documents.slice(0, originalK);
+        }
+
+        console.log(`[RAGDiaryPlugin] Rerank processing ${batches.length} batches with truncated query (${queryTokens} tokens)`);
 
         let allRerankedDocs = [];
+        let failedBatches = 0;
+        
         for (let i = 0; i < batches.length; i++) {
             const batch = batches[i];
             const docTexts = batch.map(d => d.text);
@@ -1893,13 +1942,17 @@ class RAGDiaryPlugin {
             try {
                 const body = {
                     model: this.rerankConfig.model,
-                    query: query,
+                    query: truncatedQuery, // ✅ 使用截断后的查询
                     documents: docTexts,
                     top_n: docTexts.length // Rerank all documents within the batch
                 };
 
-                // Reranking批次 ${i + 1}/${batches.length}（静默）
-                const response = await axios.post(rerankUrl, body, { headers });
+                // ✅ 添加请求超时和重试机制
+                const response = await axios.post(rerankUrl, body, {
+                    headers,
+                    timeout: 30000, // 30秒超时
+                    maxRedirects: 0 // 禁用重定向防止循环
+                });
 
                 if (response.data && Array.isArray(response.data.results)) {
                     const rerankedResults = response.data.results;
@@ -1915,23 +1968,65 @@ class RAGDiaryPlugin {
                 } else {
                     console.warn(`[RAGDiaryPlugin] Rerank for batch ${i + 1} returned invalid data. Appending original batch documents.`);
                     allRerankedDocs.push(...batch); // Fallback: use original order for this batch
+                    failedBatches++;
                 }
             } catch (error) {
+                failedBatches++;
                 console.error(`[RAGDiaryPlugin] Rerank API call failed for batch ${i + 1}. Appending original batch documents.`);
+                
+                // ✅ 详细错误分析和断路器触发
                 if (error.response) {
-                    console.error(`[RAGDiaryPlugin] Rerank API Error - Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data)}`);
+                    const status = error.response.status;
+                    const errorData = error.response.data;
+                    console.error(`[RAGDiaryPlugin] Rerank API Error - Status: ${status}, Data: ${JSON.stringify(errorData)}`);
+                    
+                    // 特定错误处理
+                    if (status === 400 && errorData?.error?.message?.includes('Query is too long')) {
+                        console.error('[RAGDiaryPlugin] Query still too long after truncation, adding to circuit breaker');
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    } else if (status >= 500) {
+                        // 服务器错误，添加到断路器
+                        this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
+                    }
+                } else if (error.code === 'ECONNABORTED') {
+                    console.error('[RAGDiaryPlugin] Rerank API timeout');
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
                 } else {
                     console.error('[RAGDiaryPlugin] Rerank API Error - Message:', error.message);
+                    this.rerankCircuitBreaker.set(`${circuitBreakerKey}_${i}`, now);
                 }
+                
                 allRerankedDocs.push(...batch); // Fallback: use original order for this batch
+                
+                // ✅ 如果失败率过高，提前终止
+                if (failedBatches / (i + 1) > 0.5 && i > 2) {
+                    console.warn('[RAGDiaryPlugin] Too many rerank failures, terminating early');
+                    // 添加剩余批次的原始文档
+                    for (let j = i + 1; j < batches.length; j++) {
+                        allRerankedDocs.push(...batches[j]);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // ✅ 清理过期的断路器记录
+        for (const [key, timestamp] of this.rerankCircuitBreaker.entries()) {
+            if (now - timestamp > 300000) { // 5分钟后清理
+                this.rerankCircuitBreaker.delete(key);
             }
         }
 
         // 关键：在所有批次处理完后，根据 rerank_score 进行全局排序
-        allRerankedDocs.sort((a, b) => b.rerank_score - a.rerank_score);
+        allRerankedDocs.sort((a, b) => {
+            const scoreA = b.rerank_score ?? b.score ?? -1;
+            const scoreB = a.rerank_score ?? a.score ?? -1;
+            return scoreA - scoreB;
+        });
 
         const finalDocs = allRerankedDocs.slice(0, originalK);
-        console.log(`[RAGDiaryPlugin] Rerank完成: ${finalDocs.length}篇文档`);
+        const successRate = ((batches.length - failedBatches) / batches.length * 100).toFixed(1);
+        console.log(`[RAGDiaryPlugin] Rerank完成: ${finalDocs.length}篇文档 (成功率: ${successRate}%)`);
         return finalDocs;
     }
     
