@@ -672,20 +672,29 @@ class RAGDiaryPlugin {
     }
 
     _stripHtml(html) {
-        if (!html || typeof html !== 'string') {
-            return html;
-        }
-        // 1. 使用 cheerio 加载 HTML 并提取纯文本
-        const $ = cheerio.load(html);
-        // 关键修复：在提取文本之前，显式移除 style 和 script 标签
-        $('style, script').remove();
-        const plainText = $.text();
+        if (!html) return ''; // 确保返回空字符串而不是 null/undefined
         
-        // 3. 移除每行开头的空格，并将多个连续换行符压缩为最多两个，以保留段落分隔
-        return plainText
-            .replace(/^[ \t]+/gm, '') // 移除每行开头的空格和制表符
-            .replace(/\n{3,}/g, '\n\n') // 将三个及以上的换行符压缩为两个
-            .trim(); // 移除整个字符串首尾的空白
+        // 如果不是字符串，尝试强制转换，避免 cheerio 或后续 trim 报错
+        if (typeof html !== 'string') {
+            return String(html);
+        }
+        
+        // 1. 使用 cheerio 加载 HTML 并提取纯文本
+        try {
+            const $ = cheerio.load(html);
+            // 关键修复：在提取文本之前，显式移除 style 和 script 标签
+            $('style, script').remove();
+            const plainText = $.text();
+            
+            // 3. 移除每行开头的空格，并将多个连续换行符压缩为最多两个
+            return plainText
+                .replace(/^[ \t]+/gm, '')
+                .replace(/\n{3,}/g, '\n\n')
+                .trim();
+        } catch (e) {
+            console.error('[RAGDiaryPlugin] _stripHtml error:', e);
+            return html; // 解析失败则返回原始内容
+        }
     }
 
     _stripEmoji(text) {
@@ -1229,7 +1238,20 @@ class RAGDiaryPlugin {
         // 1. 分别净化用户、AI 和工具的内容
         const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery || ''));
         const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
-        const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolResultsText || ''));
+        
+        // [修复] 处理工具结果：确保是字符串，并移除巨大的 Base64 图片数据，防止 TextChunker 崩溃
+        let rawToolText = toolResultsText || '';
+        if (typeof rawToolText !== 'string') {
+            try {
+                rawToolText = JSON.stringify(rawToolText);
+            } catch (e) {
+                rawToolText = String(rawToolText);
+            }
+        }
+        // 移除 data:image/xxx;base64,...... 格式的超长字符串
+        const cleanToolText = rawToolText.replace(/"data:image\/[^;]+;base64,[^"]+"/g, '"[Image Base64 Data Omitted]"');
+        
+        const sanitizedToolContent = this._stripEmoji(this._stripHtml(cleanToolText));
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([
