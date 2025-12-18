@@ -413,6 +413,15 @@ class KnowledgeBaseManager {
                 return { vector: vector, info: null };
             }
 
+            // [步骤 2.5] 动态计算 Tag Boost 指数 (Alpha)
+            const avgScore = tagResults.reduce((sum, r) => sum + r.score, 0) / tagResults.length;
+            // 映射范围: [0, 1] -> [1.5, 3.5] (并添加边界限制，防止极端值)
+            const dynamicAlpha = Math.min(3.5, Math.max(1.5, 1.5 + 2.0 * avgScore));
+            // 动态 Beta: 模糊查询时 (avgScore低) 提高降噪常数，宽容高频词
+            const dynamicBeta = 2 + (1 - avgScore) * 3;
+            
+            if(debug) console.log(`[TagMemo] ℹ️ Avg Tag Score: ${avgScore.toFixed(3)}, Alpha: ${dynamicAlpha.toFixed(3)}, Beta: ${dynamicBeta.toFixed(3)}`);
+
             const tagIds = tagResults.map(r => r.id);
             const placeholders = tagIds.map(() => '?').join(',');
 
@@ -475,11 +484,11 @@ class KnowledgeBaseManager {
                 const v = new Float32Array(t.vector.buffer, t.vector.byteOffset, dim);
                 
                 // 💡 核心算法：指数级毛刺增强 + 对数级降噪
-                // 1. 基础强度：共现次数的 2.5 次方
-                let logicStrength = Math.pow(t.co_weight || 1, 2.5);
+                // 1. 基础强度：共现次数的 Alpha 次方 (动态增强)
+                let logicStrength = Math.pow(t.co_weight || 1, dynamicAlpha);
                 
-                // 2. 降噪因子：全局频率的对数
-                let noisePenalty = Math.log((t.global_freq || 1) + 2);
+                // 2. 降噪因子：全局频率的对数 (动态 Beta 降噪)
+                let noisePenalty = Math.log((t.global_freq || 1) + dynamicBeta);
                 
                 // 3. 最终得分
                 let score = logicStrength / noisePenalty;
