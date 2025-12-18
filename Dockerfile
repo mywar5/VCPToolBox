@@ -44,6 +44,8 @@ RUN npm cache clean --force && npm install --registry=https://registry.npmmirror
 
 # 复制 Python 依赖定义文件并安装
 COPY requirements.txt ./
+# 在 Linux 环境下构建时，注释掉仅适用于 Windows 的 win10toast 包
+RUN sed -i '/^win10toast/s/^/#/' requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages --target=/usr/src/app/pydeps -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # 复制所有源代码
@@ -99,9 +101,8 @@ RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
 ENV PYTHONPATH=/usr/src/app/pydeps
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
-# 设置时区
-RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-  echo "Asia/Shanghai" > /etc/timezone
+# 设置时区：依赖于运行时传入的 TZ 环境变量（例如 docker-compose.yml 中的配置）。
+# 基础镜像 node:20-alpine 已安装 tzdata，运行时设置 TZ 即可生效。
 
 # 从构建阶段复制应用代码和 node_modules
 COPY --from=build /usr/src/app/node_modules ./node_modules

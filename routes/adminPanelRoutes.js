@@ -15,6 +15,8 @@ const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文
 module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
     const adminApiRouter = express.Router();
 
+  
+
     // --- Admin API Router 内容 ---
     
     // --- System Monitor Routes (Merged) ---
@@ -54,7 +56,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             if (process.platform === 'win32') {
                 // 先尝试现代 PowerShell 命令，失败时回退到 wmic（向下兼容）
                 try {
-                    const { stdout: memInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
+                    const { stdout: memInfo } = await execAsync('powershell -NoProfile -Command "Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json"', execOptions);
                     const memData = JSON.parse(memInfo);
                     systemInfo.memory = {
                         total: (memData.TotalVisibleMemorySize || 0) * 1024,
@@ -76,7 +78,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 }
                 
                 try {
-                    const { stdout: cpuInfo } = await execAsync('powershell -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
+                    const { stdout: cpuInfo } = await execAsync('powershell -NoProfile -Command "Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average | Select-Object Average | ConvertTo-Json"', execOptions);
                     const cpuData = JSON.parse(cpuInfo);
                     systemInfo.cpu = { usage: Math.round(cpuData.Average || 0) };
                 } catch (powershellError) {
@@ -192,6 +194,7 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.status(500).json({ error: 'Failed to write main config file', details: error.message });
         }
     });
+
 
     // GET plugin list with manifest, status, and config.env content
     adminApiRouter.get('/plugins', async (req, res) => {
@@ -967,6 +970,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
 
     // --- Agent Files API ---
     const AGENT_MAP_FILE = path.join(__dirname, '..', 'agent_map.json');
+    const AGENT_ASSISTANT_CONFIG_PATH = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env');
+    const AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH = path.join(__dirname, '..', 'Plugin', 'AgentAssistant', 'config.env.example');
 
     // GET agent map
     adminApiRouter.get('/agents/map', async (req, res) => {
@@ -1000,39 +1005,59 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
 
-    // GET list of agent .txt files
+    // GET list of agent .txt and .md files with folder structure
     adminApiRouter.get('/agents', async (req, res) => {
         try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
-            const files = await fs.readdir(AGENT_FILES_DIR);
-            const txtFiles = files.filter(file => file.toLowerCase().endsWith('.txt'));
-            res.json({ files: txtFiles });
+            // 使用agentManager的scanAgentFiles方法获取文件列表和文件夹结构
+            const agentManager = require('../modules/agentManager');
+            const agentFilesData = agentManager.getAllAgentFiles();
+            res.json(agentFilesData);
         } catch (error) {
             console.error('[AdminPanelRoutes API] Error listing agent files:', error);
             res.status(500).json({ error: 'Failed to list agent files', details: error.message });
         }
     });
 
-    // POST to create a new agent .txt file
+    // POST to create a new agent .txt or .md file
     adminApiRouter.post('/agents/new-file', async (req, res) => {
-        const { fileName } = req.body;
+        const { fileName, folderPath } = req.body;
 
-        if (!fileName || typeof fileName !== 'string' || !fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string ending with .txt.' });
+        if (!fileName || typeof fileName !== 'string') {
+            return res.status(400).json({ error: 'Invalid file name. Must be a non-empty string.' });
         }
 
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        // 确保文件名以.txt或.md结尾
+        let finalFileName = fileName;
+        if (!fileName.toLowerCase().endsWith('.txt') && !fileName.toLowerCase().endsWith('.md')) {
+            finalFileName = `${fileName}.txt`; // 默认为.txt
+        }
+
+        // 构建完整路径
+        let targetDir = AGENT_FILES_DIR;
+        if (folderPath && typeof folderPath === 'string') {
+            targetDir = path.join(AGENT_FILES_DIR, folderPath);
+        }
+        
+        const filePath = path.join(targetDir, finalFileName);
 
         try {
-            // 使用 'wx' 标志来原子性地“如果不存在则写入”，如果文件已存在，它会抛出错误。
+            // 确保目录存在
+            await fs.mkdir(targetDir, { recursive: true });
+            
+            // 使用 'wx' 标志来原子性地"如果不存在则写入"，如果文件已存在，它会抛出错误。
             await fs.writeFile(filePath, '', { flag: 'wx' });
-            res.json({ message: `File '${fileName}' created successfully.` });
+            
+            // 通知agentManager重新扫描文件
+            const agentManager = require('../modules/agentManager');
+            await agentManager.scanAgentFiles();
+            
+            res.json({ message: `File '${finalFileName}' created successfully.` });
         } catch (error) {
             if (error.code === 'EEXIST') {
-                res.status(409).json({ error: `File '${fileName}' already exists.` });
+                res.status(409).json({ error: `File '${finalFileName}' already exists.` });
             } else {
-                console.error(`[AdminPanelRoutes API] Error creating new agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to create agent file ${fileName}`, details: error.message });
+                console.error(`[AdminPanelRoutes API] Error creating new agent file ${finalFileName}:`, error);
+                res.status(500).json({ error: `Failed to create agent file ${finalFileName}`, details: error.message });
             }
         }
     });
@@ -1040,10 +1065,17 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // GET content of a specific agent file
     adminApiRouter.get('/agents/:fileName', async (req, res) => {
         const { fileName } = req.params;
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        
+        // 解码URL编码的文件名，处理路径中的斜杠
+        const decodedFileName = decodeURIComponent(fileName);
+        
+        // 检查文件扩展名
+        if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
         }
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        
+        // 处理路径中的斜杠，支持子文件夹
+        const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
 
         try {
             await fs.access(filePath);
@@ -1051,10 +1083,10 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             res.json({ content });
         } catch (error) {
             if (error.code === 'ENOENT') {
-                res.status(404).json({ error: `Agent file '${fileName}' not found.` });
+                res.status(404).json({ error: `Agent file '${decodedFileName}' not found.` });
             } else {
-                console.error(`[AdminPanelRoutes API] Error reading agent file ${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read agent file ${fileName}`, details: error.message });
+                console.error(`[AdminPanelRoutes API] Error reading agent file ${decodedFileName}:`, error);
+                res.status(500).json({ error: `Failed to read agent file ${decodedFileName}`, details: error.message });
             }
         }
     });
@@ -1064,22 +1096,28 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         const { fileName } = req.params;
         const { content } = req.body;
 
-        if (!fileName.toLowerCase().endsWith('.txt')) {
-            return res.status(400).json({ error: 'Invalid file name. Must be a .txt file.' });
+        // 解码URL编码的文件名，处理路径中的斜杠
+        const decodedFileName = decodeURIComponent(fileName);
+        
+        // 检查文件扩展名
+        if (!decodedFileName.toLowerCase().endsWith('.txt') && !decodedFileName.toLowerCase().endsWith('.md')) {
+            return res.status(400).json({ error: 'Invalid file name. Must be a .txt or .md file.' });
         }
         if (typeof content !== 'string') {
             return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
         }
 
-        const filePath = path.join(AGENT_FILES_DIR, fileName);
+        // 处理路径中的斜杠，支持子文件夹
+        const filePath = path.join(AGENT_FILES_DIR, decodedFileName.replace(/\//g, path.sep));
+        const fileDir = path.dirname(filePath);
 
         try {
-            await fs.mkdir(AGENT_FILES_DIR, { recursive: true }); // Ensure directory exists
+            await fs.mkdir(fileDir, { recursive: true }); // Ensure directory exists
             await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `Agent file '${fileName}' saved successfully.` });
+            res.json({ message: `Agent file '${decodedFileName}' saved successfully.` });
         } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving agent file ${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save agent file ${fileName}`, details: error.message });
+            console.error(`[AdminPanelRoutes API] Error saving agent file ${decodedFileName}:`, error);
+            res.status(500).json({ error: `Failed to save agent file ${decodedFileName}`, details: error.message });
         }
     });
 
@@ -1325,6 +1363,575 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             }
         } else {
             res.status(503).json({ success: false, error: 'VectorDBManager is not available.' });
+        }
+    });
+
+    // ========================
+    // AgentAssistant 配置 API
+    // ========================
+
+    /**
+     * 辅助函数：解析 AgentAssistant config.env 中的配置
+     * 返回：{ maxHistoryRounds, contextTtlHours, globalSystemPrompt, agents: [...] }
+     */
+    async function parseAgentAssistantConfig() {
+        let content = '';
+        try {
+            content = await fs.readFile(AGENT_ASSISTANT_CONFIG_PATH, 'utf-8');
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                // 如果正式配置不存在，尝试使用示例作为模板
+                try {
+                    content = await fs.readFile(AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH, 'utf-8');
+                } catch (exampleError) {
+                    // 示例也不存在则返回默认空配置
+                    console.warn('[AdminAPI] AgentAssistant config.env and example config.env not found. Using defaults.');
+                    return {
+                        maxHistoryRounds: 7,
+                        contextTtlHours: 24,
+                        agents: []
+                    };
+                }
+            } else {
+                throw error;
+            }
+        }
+
+        const lines = content.split(/\r?\n/);
+        let maxHistoryRounds = null;
+        let contextTtlHours = null;
+        let globalSystemPrompt = null;
+        const agentsByBaseName = new Map();
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line || line.startsWith('#') || !line.includes('=')) continue;
+
+            const eqIndex = line.indexOf('=');
+            const key = line.substring(0, eqIndex).trim();
+            let value = line.substring(eqIndex + 1).trim();
+
+            // 去掉包裹的引号
+            if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.substring(1, value.length - 1);
+            }
+
+            // 反转义常见的转义序列
+            const unescapedValue = value
+                .replace(/\\\\/g, '\\')
+                .replace(/\\n/g, '\n')
+                .replace(/\\"/g, '"')
+                .replace(/\\'/g, "'");
+
+            if (key === 'AGENT_ASSISTANT_MAX_HISTORY_ROUNDS') {
+                const parsed = parseInt(unescapedValue, 10);
+                if (!Number.isNaN(parsed)) maxHistoryRounds = parsed;
+                continue;
+            }
+
+            if (key === 'AGENT_ASSISTANT_CONTEXT_TTL_HOURS') {
+                const parsed = parseInt(unescapedValue, 10);
+                if (!Number.isNaN(parsed)) contextTtlHours = parsed;
+                continue;
+            }
+
+            if (key === 'AGENT_ALL_SYSTEM_PROMPT') {
+                globalSystemPrompt = unescapedValue;
+                continue;
+            }
+
+            // 解析 AGENT_{BASENAME}_* 定义
+            if (key.startsWith('AGENT_')) {
+                const match = key.match(/^AGENT_([A-Z0-9_]+)_(MODEL_ID|CHINESE_NAME|SYSTEM_PROMPT|MAX_OUTPUT_TOKENS|TEMPERATURE|DESCRIPTION)$/i);
+                if (!match) continue;
+
+                const baseName = match[1].toUpperCase();
+                const field = match[2];
+
+                if (!agentsByBaseName.has(baseName)) {
+                    agentsByBaseName.set(baseName, {
+                        baseName,
+                        modelId: '',
+                        chineseName: '',
+                        systemPrompt: '',
+                        maxOutputTokens: 40000,
+                        temperature: 0.7,
+                        description: ''
+                    });
+                }
+
+                const agent = agentsByBaseName.get(baseName);
+
+                switch (field) {
+                    case 'MODEL_ID':
+                        agent.modelId = unescapedValue;
+                        break;
+                    case 'CHINESE_NAME':
+                        agent.chineseName = unescapedValue;
+                        break;
+                    case 'SYSTEM_PROMPT':
+                        agent.systemPrompt = unescapedValue;
+                        break;
+                    case 'MAX_OUTPUT_TOKENS': {
+                        const parsedTokens = parseInt(unescapedValue, 10);
+                        if (!Number.isNaN(parsedTokens)) agent.maxOutputTokens = parsedTokens;
+                        break;
+                    }
+                    case 'TEMPERATURE': {
+                        const parsedTemp = parseFloat(unescapedValue);
+                        if (!Number.isNaN(parsedTemp)) agent.temperature = parsedTemp;
+                        break;
+                    }
+                    case 'DESCRIPTION':
+                        agent.description = unescapedValue;
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        const agents = Array.from(agentsByBaseName.values()).filter(agent => agent.chineseName || agent.modelId);
+
+        return {
+            maxHistoryRounds: maxHistoryRounds != null ? maxHistoryRounds : 7,
+            contextTtlHours: contextTtlHours != null ? contextTtlHours : 24,
+            globalSystemPrompt: globalSystemPrompt != null ? globalSystemPrompt : '',
+            agents
+        };
+    }
+
+    function escapeForDoubleQuotes(value) {
+        if (value == null) return '';
+        return String(value)
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\r?\n/g, '\\n');
+    }
+
+    function generateBaseName(chineseName, existingBaseNames) {
+        const used = new Set(existingBaseNames.map(name => name.toUpperCase()));
+        let base = (chineseName || '').normalize('NFKD').replace(/[^\x00-\x7F]/g, '');
+        if (!base) base = 'AGENT';
+        base = base.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!base) base = 'AGENT';
+        base = base.toUpperCase();
+
+        let candidate = base;
+        let counter = 2;
+        while (used.has(candidate)) {
+            candidate = `${base}_${counter}`;
+            counter += 1;
+        }
+        return candidate;
+    }
+
+    // 获取 AgentAssistant 配置
+    adminApiRouter.get('/agent-assistant/config', async (req, res) => {
+        try {
+            const config = await parseAgentAssistantConfig();
+            res.json(config);
+        } catch (error) {
+            console.error('[AdminAPI] Error reading AgentAssistant config:', error);
+            res.status(500).json({ error: 'Failed to read AgentAssistant config', details: error.message });
+        }
+    });
+
+    // 保存 AgentAssistant 配置
+    adminApiRouter.post('/agent-assistant/config', async (req, res) => {
+        const body = req.body || {};
+        let { maxHistoryRounds, contextTtlHours, globalSystemPrompt, agents } = body;
+
+        if (!Array.isArray(agents)) {
+            return res.status(400).json({ error: 'Invalid request body. Expected { agents: [...] }.' });
+        }
+
+        maxHistoryRounds = parseInt(maxHistoryRounds, 10);
+        if (Number.isNaN(maxHistoryRounds) || maxHistoryRounds <= 0) maxHistoryRounds = 7;
+
+        contextTtlHours = parseInt(contextTtlHours, 10);
+        if (Number.isNaN(contextTtlHours) || contextTtlHours <= 0) contextTtlHours = 24;
+
+        // 轻量校验 agent 配置
+        const normalizedAgents = [];
+        const baseNames = [];
+
+        for (const agent of agents) {
+            if (!agent) continue;
+            const chineseName = (agent.chineseName || '').trim();
+            const modelId = (agent.modelId || '').trim();
+
+            if (!chineseName || !modelId) {
+                // 对于缺少关键字段的条目，直接跳过，不写入配置
+                continue;
+            }
+
+            const baseName = (agent.baseName || '').trim();
+            normalizedAgents.push({
+                baseName,
+                chineseName,
+                modelId,
+                systemPrompt: agent.systemPrompt || '',
+                maxOutputTokens: parseInt(agent.maxOutputTokens, 10) || 40000,
+                temperature: Number.isNaN(parseFloat(agent.temperature))
+                    ? 0.7
+                    : parseFloat(agent.temperature),
+                description: agent.description || ''
+            });
+            if (baseName) baseNames.push(baseName);
+        }
+
+        try {
+            // 读取原始文件内容，用于保留非 AGENT_* 的其他配置与注释
+            let originalLines = [];
+            try {
+                const originalContent = await fs.readFile(AGENT_ASSISTANT_CONFIG_PATH, 'utf-8');
+                originalLines = originalContent.split(/\r?\n/);
+            } catch (error) {
+                if (error.code === 'ENOENT') {
+                    // 如果正式配置不存在，尝试示例以获取注释模板
+                    try {
+                        const exampleContent = await fs.readFile(AGENT_ASSISTANT_EXAMPLE_CONFIG_PATH, 'utf-8');
+                        originalLines = exampleContent.split(/\r?\n/);
+                    } catch (exampleError) {
+                        originalLines = [];
+                    }
+                } else {
+                    throw error;
+                }
+            }
+
+            // 保留所有非 AGENT_ 开头的行（包括注释）
+            const preservedLines = originalLines.filter(line => !line.trim().startsWith('AGENT_'));
+
+            const newLines = [...preservedLines];
+            if (newLines.length > 0 && newLines[newLines.length - 1].trim() !== '') {
+                newLines.push('');
+            }
+
+            newLines.push(`# -------------------------------------------------------------------`);
+            newLines.push(`# [AgentAssistant 基础配置] （由控制中心自动生成）`);
+            newLines.push(`# -------------------------------------------------------------------`);
+            newLines.push(`AGENT_ASSISTANT_MAX_HISTORY_ROUNDS=${maxHistoryRounds}`);
+            newLines.push(`AGENT_ASSISTANT_CONTEXT_TTL_HOURS=${contextTtlHours}`);
+
+            if (globalSystemPrompt && String(globalSystemPrompt).trim() !== '') {
+                newLines.push(
+                    `AGENT_ALL_SYSTEM_PROMPT="${escapeForDoubleQuotes(String(globalSystemPrompt))}"`
+                );
+            }
+
+            newLines.push('');
+
+            if (normalizedAgents.length > 0) {
+                newLines.push(`# -------------------------------------------------------------------`);
+                newLines.push(`# [AgentAssistant 定义的 Agent 列表] （由控制中心自动生成）`);
+                newLines.push(`# 请尽量通过控制中心修改，避免手动编辑造成不一致。`);
+                newLines.push(`# -------------------------------------------------------------------`);
+                newLines.push('');
+
+                const existingBaseNames = normalizedAgents
+                    .map(a => a.baseName)
+                    .filter(Boolean)
+                    .map(name => name.toUpperCase());
+
+                for (const agent of normalizedAgents) {
+                    let baseName = (agent.baseName || '').trim();
+                    if (!baseName) {
+                        baseName = generateBaseName(agent.chineseName, existingBaseNames);
+                        existingBaseNames.push(baseName);
+                    }
+
+                    newLines.push(`# Agent: ${agent.chineseName}`);
+                    newLines.push(`AGENT_${baseName}_MODEL_ID="${escapeForDoubleQuotes(agent.modelId)}"`);
+                    newLines.push(`AGENT_${baseName}_CHINESE_NAME="${escapeForDoubleQuotes(agent.chineseName)}"`);
+                    if (agent.systemPrompt) {
+                        newLines.push(
+                            `AGENT_${baseName}_SYSTEM_PROMPT="${escapeForDoubleQuotes(agent.systemPrompt)}"`
+                        );
+                    }
+                    if (agent.maxOutputTokens) {
+                        newLines.push(`AGENT_${baseName}_MAX_OUTPUT_TOKENS=${agent.maxOutputTokens}`);
+                    }
+                    if (typeof agent.temperature === 'number') {
+                        newLines.push(`AGENT_${baseName}_TEMPERATURE=${agent.temperature}`);
+                    }
+                    if (agent.description) {
+                        newLines.push(
+                            `AGENT_${baseName}_DESCRIPTION="${escapeForDoubleQuotes(agent.description)}"`
+                        );
+                    }
+                    newLines.push('');
+                }
+            }
+
+            const finalContent = newLines.join('\n');
+            await fs.writeFile(AGENT_ASSISTANT_CONFIG_PATH, finalContent, 'utf-8');
+
+            // 重新加载插件，使新的 Agent 配置生效
+            try {
+                await pluginManager.loadPlugins();
+            } catch (reloadError) {
+                console.error('[AdminAPI] Error reloading plugins after AgentAssistant config save:', reloadError);
+                // 即使重载失败，配置文件也已经更新，前端仍然认为保存成功
+            }
+
+            res.json({ message: 'AgentAssistant 配置已保存。' });
+        } catch (error) {
+            console.error('[AdminAPI] Error writing AgentAssistant config:', error);
+            res.status(500).json({ error: 'Failed to write AgentAssistant config', details: error.message });
+        }
+    });
+
+    // ========================
+    // Tool List Editor API
+    // ========================
+    const PROJECT_BASE_PATH = path.join(__dirname, '..');
+    const TOOL_CONFIGS_DIR = path.join(PROJECT_BASE_PATH, 'ToolConfigs');
+
+    // 确保ToolConfigs目录存在
+    async function ensureToolConfigsDir() {
+        try {
+            await fs.access(TOOL_CONFIGS_DIR);
+        } catch {
+            await fs.mkdir(TOOL_CONFIGS_DIR, { recursive: true });
+        }
+    }
+
+    // 获取所有可用工具列表
+    adminApiRouter.get('/tool-list-editor/tools', (req, res) => {
+        try {
+            const tools = [];
+            
+            // 遍历所有插件
+            for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
+                if (manifest.capabilities && manifest.capabilities.invocationCommands) {
+                    // 为每个invocation command创建一个工具条目
+                    manifest.capabilities.invocationCommands.forEach(cmd => {
+                        tools.push({
+                            name: cmd.commandIdentifier || pluginName,
+                            pluginName: pluginName,
+                            displayName: manifest.displayName || pluginName,
+                            description: cmd.description || manifest.description || '',
+                            example: cmd.example || ''
+                        });
+                    });
+                }
+            }
+            
+            res.json({ tools });
+        } catch (error) {
+            console.error('[AdminAPI] Error getting tool list:', error);
+            res.status(500).json({ error: 'Failed to get tool list', details: error.message });
+        }
+    });
+
+    // 获取所有可用的配置文件列表
+    adminApiRouter.get('/tool-list-editor/configs', async (req, res) => {
+        try {
+            await ensureToolConfigsDir();
+            const files = await fs.readdir(TOOL_CONFIGS_DIR);
+            const configs = files
+                .filter(f => f.endsWith('.json'))
+                .map(f => f.replace('.json', ''));
+            res.json({ configs });
+        } catch (error) {
+            console.error('[AdminAPI] Error getting config list:', error);
+            res.status(500).json({ error: 'Failed to get config list', details: error.message });
+        }
+    });
+
+    // 加载指定的配置文件
+    adminApiRouter.get('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            const content = await fs.readFile(configPath, 'utf-8');
+            const configData = JSON.parse(content);
+            
+            res.json(configData);
+        } catch (error) {
+            console.error('[AdminAPI] Error loading config:', error);
+            res.status(500).json({ error: 'Failed to load config', details: error.message });
+        }
+    });
+
+    // 保存配置文件
+    adminApiRouter.post('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            await ensureToolConfigsDir();
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            const configData = {
+                selectedTools: req.body.selectedTools || [],
+                toolDescriptions: req.body.toolDescriptions || {}
+            };
+            
+            await fs.writeFile(configPath, JSON.stringify(configData, null, 2), 'utf-8');
+            res.json({ status: 'success', message: 'Config saved successfully' });
+        } catch (error) {
+            console.error('[AdminAPI] Error saving config:', error);
+            res.status(500).json({ error: 'Failed to save config', details: error.message });
+        }
+    });
+
+    // 删除配置文件
+    adminApiRouter.delete('/tool-list-editor/config/:configName', async (req, res) => {
+        try {
+            const configName = req.params.configName;
+            const configPath = path.join(TOOL_CONFIGS_DIR, `${configName}.json`);
+            
+            await fs.unlink(configPath);
+            res.json({ status: 'success', message: 'Config deleted successfully' });
+        } catch (error) {
+            console.error('[AdminAPI] Error deleting config:', error);
+            res.status(500).json({ error: 'Failed to delete config', details: error.message });
+        }
+    });
+
+    // 检查文件是否存在
+    adminApiRouter.get('/tool-list-editor/check-file/:fileName', async (req, res) => {
+        try {
+            const fileName = req.params.fileName;
+            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            
+            try {
+                await fs.access(outputPath);
+                // 文件存在
+                res.json({ exists: true });
+            } catch {
+                // 文件不存在
+                res.json({ exists: false });
+            }
+        } catch (error) {
+            console.error('[AdminAPI] Error checking file:', error);
+            res.status(500).json({ error: 'Failed to check file', details: error.message });
+        }
+    });
+
+    // 导出为txt文件
+    adminApiRouter.post('/tool-list-editor/export/:fileName', async (req, res) => {
+        try {
+            const fileName = req.params.fileName;
+            const tvsTxtDir = path.join(PROJECT_BASE_PATH, 'TVStxt');
+            const outputPath = path.join(tvsTxtDir, `${fileName}.txt`);
+            
+            const { selectedTools, toolDescriptions, includeHeader, includeExamples } = req.body;
+            
+            let output = '';
+            
+            // 添加头部说明
+            if (includeHeader) {
+                output += 'VCP工具调用格式与指南\r\n\r\n';
+                output += '<<<[TOOL_REQUEST]>>>\r\n';
+                output += 'maid:「始」你的署名「末」, //重要字段，以进行任务追踪\r\n';
+                output += 'tool_name:「始」工具名「末」, //必要字段\r\n';
+                output += 'arg:「始」工具参数「末」, //具体视不同工具需求而定\r\n';
+                output += '<<<[END_TOOL_REQUEST]>>>\r\n\r\n';
+                output += '使用「始」「末」包裹参数来兼容富文本识别。\r\n';
+                output += '主动判断当前需求，灵活使用各类工具调用。\r\n\r\n';
+                output += '========================================\r\n\r\n';
+            }
+            
+            // 收集所有选中的工具信息
+            const tools = [];
+            for (const [pluginName, manifest] of pluginManager.plugins.entries()) {
+                if (manifest.capabilities && manifest.capabilities.invocationCommands) {
+                    manifest.capabilities.invocationCommands.forEach(cmd => {
+                        const toolName = cmd.commandIdentifier || pluginName;
+                        if (selectedTools.includes(toolName)) {
+                            tools.push({
+                                name: toolName,
+                                pluginName: pluginName,
+                                displayName: manifest.displayName || pluginName,
+                                description: cmd.description || manifest.description || '',
+                                example: cmd.example || ''
+                            });
+                        }
+                    });
+                }
+            }
+            
+            // 按插件分组工具，以节省Tokens
+            const toolsByPlugin = {};
+            tools.forEach(tool => {
+                if (!toolsByPlugin[tool.pluginName]) {
+                    toolsByPlugin[tool.pluginName] = [];
+                }
+                toolsByPlugin[tool.pluginName].push(tool);
+            });
+            
+            // 按插件名排序
+            const sortedPluginNames = Object.keys(toolsByPlugin).sort((a, b) => a.localeCompare(b));
+            
+            // 为每个插件生成说明
+            let pluginIndex = 0;
+            sortedPluginNames.forEach(pluginName => {
+                pluginIndex++;
+                const pluginTools = toolsByPlugin[pluginName];
+                
+                // 获取插件显示名称（使用第一个工具的displayName）
+                const pluginDisplayName = pluginTools[0].displayName || pluginName;
+                
+                // 如果该插件只有一个工具
+                if (pluginTools.length === 1) {
+                    const tool = pluginTools[0];
+                    const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
+                    
+                    output += `${pluginIndex}. ${pluginDisplayName} (${tool.name})\r\n`;
+                    output += `插件: ${pluginName}\r\n`;
+                    output += `说明: ${desc}\r\n`;
+                    
+                    if (includeExamples && tool.example) {
+                        output += `\r\n示例:\r\n${tool.example}\r\n`;
+                    }
+                } else {
+                    // 如果该插件有多个工具，合并显示
+                    output += `${pluginIndex}. ${pluginDisplayName}\r\n`;
+                    output += `插件: ${pluginName}\r\n`;
+                    output += `该插件包含 ${pluginTools.length} 个工具调用:\r\n\r\n`;
+                    
+                    pluginTools.forEach((tool, toolIdx) => {
+                        const desc = toolDescriptions[tool.name] || tool.description || '暂无描述';
+                        
+                        output += `  ${pluginIndex}.${toolIdx + 1} ${tool.name}\r\n`;
+                        
+                        // 处理说明部分，保持原有的多行格式
+                        const descLines = desc.split('\n');
+                        descLines.forEach((line, lineIdx) => {
+                            if (lineIdx === 0) {
+                                output += `  说明: ${line}\r\n`;
+                            } else {
+                                output += `  ${line}\r\n`;
+                            }
+                        });
+                        
+                        if (includeExamples && tool.example) {
+                            output += `\r\n`;
+                            // 将示例内容缩进
+                            const exampleLines = tool.example.split('\n');
+                            exampleLines.forEach(line => {
+                                output += `  ${line}\r\n`;
+                            });
+                        }
+                        
+                        if (toolIdx < pluginTools.length - 1) {
+                            output += '\r\n';
+                        }
+                    });
+                }
+                
+                output += '\r\n' + '----------------------------------------' + '\r\n\r\n';
+            });
+            
+            await fs.writeFile(outputPath, output, 'utf-8');
+            res.json({ status: 'success', filePath: `TVStxt/${fileName}.txt` });
+        } catch (error) {
+            console.error('[AdminAPI] Error exporting to txt:', error);
+            res.status(500).json({ error: 'Failed to export to txt', details: error.message });
         }
     });
     

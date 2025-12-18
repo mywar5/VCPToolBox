@@ -13,6 +13,10 @@ const request = axios_1.default.create({
     // 请求超时设置
     timeout: config_js_1.config.REQUEST_TIMEOUT,
     withCredentials: true,
+    // 添加标准的浏览器 User-Agent
+    headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+    }
 });
 // 请求拦截
 request.interceptors.request.use((request) => {

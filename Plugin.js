@@ -8,7 +8,6 @@ const FileFetcherServer = require('./FileFetcherServer.js');
 const express = require('express'); // For plugin API routing
 const chokidar = require('chokidar');
 const { getAuthCode } = require('./modules/captchaDecoder'); // 导入统一的解码函数
-const { VectorDBManager } = require('./VectorDBManager.js');
 
 const PLUGIN_DIR = path.join(__dirname, 'Plugin');
 const manifestFileName = 'plugin-manifest.json';
@@ -28,12 +27,17 @@ class PluginManager {
         this.webSocketServer = null; // 为 WebSocketServer 实例占位
         this.isReloading = false;
         this.reloadTimeout = null;
-        this.vectorDBManager = new VectorDBManager();
+        this.vectorDBManager = null; // 修复：不再自己创建，等待注入
     }
 
     setWebSocketServer(wss) {
         this.webSocketServer = wss;
         if (this.debugMode) console.log('[PluginManager] WebSocketServer instance has been set.');
+    }
+
+    setVectorDBManager(vdbManager) {
+        this.vectorDBManager = vdbManager;
+        if (this.debugMode) console.log('[PluginManager] VectorDBManager instance has been set.');
     }
 
     async _getDecryptedAuthCode() {
@@ -56,20 +60,24 @@ class PluginManager {
 
     _getPluginConfig(pluginManifest) {
         const config = {};
-        const globalEnv = process.env; 
-        const pluginSpecificEnv = pluginManifest.pluginSpecificEnvConfig || {}; 
+        const globalEnv = process.env;
+        const pluginSpecificEnv = pluginManifest.pluginSpecificEnvConfig || {};
 
         if (pluginManifest.configSchema) {
             for (const key in pluginManifest.configSchema) {
-                const expectedType = pluginManifest.configSchema[key];
+                const schemaEntry = pluginManifest.configSchema[key];
+                // 兼容两种格式：对象格式 { type: "string", ... } 和简单字符串格式 "string"
+                const expectedType = (typeof schemaEntry === 'object' && schemaEntry !== null)
+                    ? schemaEntry.type
+                    : schemaEntry;
                 let rawValue;
 
-                if (pluginSpecificEnv.hasOwnProperty(key)) { 
+                if (pluginSpecificEnv.hasOwnProperty(key)) {
                     rawValue = pluginSpecificEnv[key];
-                } else if (globalEnv.hasOwnProperty(key)) { 
+                } else if (globalEnv.hasOwnProperty(key)) {
                     rawValue = globalEnv[key];
                 } else {
-                    continue; 
+                    continue;
                 }
 
                 let value = rawValue;
@@ -129,13 +137,14 @@ class PluginManager {
             let output = '';
             let errorOutput = '';
             let processExited = false;
-            const timeoutDuration = plugin.communication?.timeout || 30000;
+            const timeoutDuration = plugin.communication?.timeout || 60000; // 增加默认超时时间到 1 分钟
 
             const timeoutId = setTimeout(() => {
                 if (!processExited) {
-                    console.error(`[PluginManager] Static plugin "${plugin.name}" execution timed out after ${timeoutDuration}ms.`); // Keep error
+                    console.log(`[PluginManager] Static plugin "${plugin.name}" has completed its work cycle (${timeoutDuration}ms), terminating background process.`);
                     pluginProcess.kill('SIGKILL');
-                    reject(new Error(`Static plugin "${plugin.name}" execution timed out.`));
+                    // 超时不作为错误 - static 插件完成工作周期后返回已收集的输出
+                    resolve(output.trim());
                 }
             }, timeoutDuration);
 
@@ -152,7 +161,8 @@ class PluginManager {
             pluginProcess.on('exit', (code, signal) => {
                 processExited = true;
                 clearTimeout(timeoutId);
-                if (signal === 'SIGKILL') { 
+                if (signal === 'SIGKILL') {
+                    // 被 SIGKILL 终止（超时），已经在 timeout 回调中 resolve 了，这里直接返回
                     return;
                 }
                 if (code !== 0) {
@@ -283,8 +293,32 @@ class PluginManager {
     
     
     getPlaceholderValue(placeholder) {
-        const entry = this.staticPlaceholderValues.get(placeholder);
-        return entry ? entry.value : `[Placeholder ${placeholder} not found]`;
+        // First, try the modern, clean key (e.g., "VCPChromePageInfo")
+        let entry = this.staticPlaceholderValues.get(placeholder);
+
+        // If not found, try the legacy key with brackets (e.g., "{{VCPChromePageInfo}}")
+        if (entry === undefined) {
+            entry = this.staticPlaceholderValues.get(`{{${placeholder}}}`);
+        }
+
+        // If still not found, return the "not found" message
+        if (entry === undefined) {
+            return `[Placeholder ${placeholder} not found]`;
+        }
+
+        // Now, handle the value format
+        // Modern format: { value: "...", serverId: "..." }
+        if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
+            return entry.value;
+        }
+        
+        // Legacy format: raw string
+        if (typeof entry === 'string') {
+            return entry;
+        }
+
+        // Fallback for unexpected formats
+        return `[Invalid value format for placeholder ${placeholder}]`;
     }
 
     async executeMessagePreprocessor(pluginName, messages) {
@@ -448,9 +482,9 @@ class PluginManager {
             this.preprocessorOrder = finalOrder;
             if (finalOrder.length > 0) console.log('[PluginManager] Final message preprocessor order: ' + finalOrder.join(' -> '));
 
-            // 5. 初始化共享服务 (VectorDBManager)
-            if (this.vectorDBManager) {
-                await this.vectorDBManager.initialize();
+            // 5. VectorDBManager 应该已经由 server.js 初始化，这里不再重复初始化
+            if (!this.vectorDBManager) {
+                console.warn('[PluginManager] VectorDBManager not set! Plugins requiring it may fail.');
             }
 
             // 6. 按顺序初始化所有模块
@@ -1202,7 +1236,22 @@ const pluginManager = new PluginManager();
 pluginManager.getAllPlaceholderValues = function() {
     const valuesMap = new Map();
     for (const [key, entry] of this.staticPlaceholderValues.entries()) {
-        valuesMap.set(key, entry.value || `[Placeholder ${key} not found]`);
+        // Sanitize the key to remove legacy brackets for consistency
+        const sanitizedKey = key.replace(/^{{|}}$/g, '');
+        
+        let value;
+        // Handle modern object format
+        if (typeof entry === 'object' && entry !== null && entry.hasOwnProperty('value')) {
+            value = entry.value;
+        // Handle legacy raw string format
+        } else if (typeof entry === 'string') {
+            value = entry;
+        } else {
+            // Fallback for any other unexpected format
+            value = `[Invalid format for placeholder ${sanitizedKey}]`;
+        }
+        
+        valuesMap.set(sanitizedKey, value || `[Placeholder ${sanitizedKey} has no value]`);
     }
     return valuesMap;
 };
