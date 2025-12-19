@@ -1000,6 +1000,10 @@ class KnowledgeBaseManager {
         const match = content.match(/Tag:\s*(.+)$/im);
         if (!match) return [];
         let tags = match[1].split(/[,，、]/).map(t => t.trim()).filter(Boolean);
+        
+        // 🔧 修复：清理每个tag末尾的句号
+        tags = tags.map(t => t.replace(/[。.]+$/g, '').trim()).filter(Boolean);
+        
         if (this.config.tagBlacklistSuper.length > 0) {
             const superRegex = new RegExp(this.config.tagBlacklistSuper.join('|'), 'g');
             tags = tags.map(t => t.replace(superRegex, '').trim());
