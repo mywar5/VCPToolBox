@@ -40,8 +40,11 @@ async function main() {
         }
 
         if (weatherData.warning && weatherData.warning.length > 0) {
-            const warningTitles = weatherData.warning.map(w => w.title).join('、');
-            output += ` [预警：${warningTitles}]`;
+            let warningDetail = '\n【天气预警详情】';
+            weatherData.warning.forEach(w => {
+                warningDetail += `\n- ${w.title}: ${w.text}`;
+            });
+            output += warningDetail;
         }
 
         process.stdout.write(output);
