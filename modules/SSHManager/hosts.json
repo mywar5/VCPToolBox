@@ -16,7 +16,7 @@
             "description": "开发环境 Linux 服务器",
             "type": "ssh",
             "enabled": true,
-            "host": "192.0.2.238",
+            "host": "10.0.0.238",
             "port": 22,
             "username": "your_username",
             "authMethod": "password",
@@ -64,7 +64,7 @@
             "tags": ["prod", "linux", "critical"]
         },
         
-        "wei-test": {
+        "weilida-test": {
             "name": "测试机",
             "description": "本地测试服务器",
             "type": "ssh",
