@@ -83,8 +83,9 @@ module.exports = function(dailyNoteRootPath, DEBUG_MODE) {
             return res.status(400).json({ error: 'Search term is required.' });
         }
 
-        const searchTerm = term.trim().toLowerCase();
-        const PREVIEW_LENGTH = 100; 
+        // 支持多关键字搜索（空格隔开）
+        const searchTerms = term.trim().toLowerCase().split(/\s+/).filter(t => t !== '');
+        const PREVIEW_LENGTH = 100;
         let foldersToSearch = [];
         const matchedNotes = [];
 
@@ -92,7 +93,7 @@ module.exports = function(dailyNoteRootPath, DEBUG_MODE) {
             if (folder && typeof folder === 'string' && folder.trim() !== '') {
                 const specificFolderPath = path.join(dailyNoteRootPath, folder);
                 try {
-                    await fs.access(specificFolderPath); 
+                    await fs.access(specificFolderPath);
                     if ((await fs.stat(specificFolderPath)).isDirectory()) {
                         foldersToSearch.push({ name: folder, path: specificFolderPath });
                     } else {
@@ -123,12 +124,17 @@ module.exports = function(dailyNoteRootPath, DEBUG_MODE) {
                     const filePath = path.join(dir.path, fileName);
                     try {
                         const content = await fs.readFile(filePath, 'utf-8');
-                        if (content.toLowerCase().includes(searchTerm)) {
+                        const lowerContent = content.toLowerCase();
+                        
+                        // 检查是否包含所有关键字 (AND 逻辑)
+                        const isMatch = searchTerms.every(t => lowerContent.includes(t));
+                        
+                        if (isMatch) {
                             const stats = await fs.stat(filePath);
                             let preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
                             matchedNotes.push({
                                 name: fileName,
-                                folderName: dir.name, 
+                                folderName: dir.name,
                                 lastModified: stats.mtime.toISOString(),
                                 preview: preview
                             });
