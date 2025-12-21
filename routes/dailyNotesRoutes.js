@@ -285,5 +285,49 @@ module.exports = function(dailyNoteRootPath, DEBUG_MODE) {
         res.json({ message, deleted: results.deleted, errors: results.errors });
     });
 
+    // POST to delete an EMPTY folder
+    router.post('/folder/delete', async (req, res) => {
+        const { folderName } = req.body;
+
+        if (!folderName || typeof folderName !== 'string' || folderName.trim() === '') {
+            return res.status(400).json({ error: 'Invalid request body. Expected { folderName: string }.' });
+        }
+
+        const targetFolderPath = path.join(dailyNoteRootPath, folderName);
+
+        try {
+            // 安全检查：确保路径合法且在日记本根目录内
+            const resolvedPath = path.resolve(targetFolderPath);
+            const resolvedRoot = path.resolve(dailyNoteRootPath);
+            if (!resolvedPath.startsWith(resolvedRoot) || resolvedPath === resolvedRoot) {
+                return res.status(403).json({ error: 'Forbidden: Cannot delete the root directory or paths outside of daily notes.' });
+            }
+
+            // 检查文件夹是否存在
+            await fs.access(targetFolderPath);
+            
+            // 读取文件夹内容，检查是否为空
+            const files = await fs.readdir(targetFolderPath);
+            if (files.length > 0) {
+                return res.status(400).json({
+                    error: `Folder '${folderName}' is not empty.`,
+                    message: '为了安全起见，非空文件夹禁止删除。请先删除或移动其中的所有内容。'
+                });
+            }
+            
+            // 执行删除空文件夹的操作
+            await fs.rmdir(targetFolderPath);
+            
+            res.json({ message: `Empty folder '${folderName}' has been deleted successfully.` });
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                res.status(404).json({ error: `Folder '${folderName}' not found.` });
+            } else {
+                console.error(`[DailyNotes API] Error deleting folder ${folderName}:`, error);
+                res.status(500).json({ error: `Failed to delete folder ${folderName}`, details: error.message });
+            }
+        }
+    });
+
     return router;
 };
