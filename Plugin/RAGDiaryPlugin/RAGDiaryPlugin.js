@@ -717,6 +717,142 @@ class RAGDiaryPlugin {
             .trim();
     }
 
+    /**
+     * 更精确的 Base64 检测函数
+     * @param {string} str - 要检测的字符串
+     * @returns {boolean} 是否可能是 Base64 数据
+     */
+    _isLikelyBase64(str) {
+        if (!str || str.length < 100) return false;
+        
+        // Base64 特征检测
+        const sample = str.substring(0, 200);
+        
+        // 1. 检查是否只包含 Base64 字符
+        if (!/^[A-Za-z0-9+/=]+$/.test(sample)) return false;
+        
+        // 2. 检查长度是否合理（Base64 通常是 4 的倍数）
+        if (str.length % 4 !== 0 && str.length % 4 !== 2 && str.length % 4 !== 3) return false;
+        
+        // 3. 检查字符多样性（真正的文本不太可能有这么高的字符密度）
+        const uniqueChars = new Set(sample).size;
+        if (uniqueChars > 50) return true; // Base64 通常有 60+ 种不同字符
+        
+        // 4. 长度超过 500 且符合格式，大概率是 Base64
+        return str.length > 500;
+    }
+
+    /**
+     * 将 JSON 对象转换为 Markdown 文本，减少向量噪音
+     * @param {any} obj - 要转换的对象
+     * @param {number} depth - 当前递归深度
+     * @returns {string}
+     */
+    _jsonToMarkdown(obj, depth = 0) {
+        if (obj === null || obj === undefined) return '';
+        if (typeof obj !== 'object') return String(obj);
+
+        let md = '';
+        const indent = '  '.repeat(depth);
+
+        if (Array.isArray(obj)) {
+            for (const item of obj) {
+                // 特殊处理 VCP 的 content part 格式: [{"type":"text", "text":"..."}]
+                if (item && typeof item === 'object' && item.type === 'text' && item.text) {
+                    // ✅ 新增：检查 text 内容是否包含嵌套 JSON
+                    let textContent = item.text;
+                    
+                    // 尝试提取并解析嵌套的 JSON - 改进的正则表达式
+                    const jsonMatch = textContent.match(/:\s*\n(\{[\s\S]*?\}|\[[\s\S]*?\])\s*$/);
+                    if (jsonMatch) {
+                        try {
+                            const nestedJson = JSON.parse(jsonMatch[1]);
+                            // 将前缀文字 + 递归解析的 JSON 内容合并
+                            const prefix = textContent.substring(0, jsonMatch.index + 1).trim();
+                            const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
+                            md += `${prefix}\n${nestedMd}\n`;
+                            continue;
+                        } catch (e) {
+                            // 解析失败，使用原始文本
+                            console.debug('[RAGDiaryPlugin] Failed to parse nested JSON in text content:', e.message);
+                        }
+                    }
+                    
+                    // ✅ 新增：检查是否有内联 JSON（不在行尾的情况）
+                    const inlineJsonMatch = textContent.match(/(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}|\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\])/);
+                    if (inlineJsonMatch && inlineJsonMatch[0].length > 50) {
+                        try {
+                            const inlineJson = JSON.parse(inlineJsonMatch[0]);
+                            const beforeJson = textContent.substring(0, inlineJsonMatch.index).trim();
+                            const afterJson = textContent.substring(inlineJsonMatch.index + inlineJsonMatch[0].length).trim();
+                            const inlineMd = this._jsonToMarkdown(inlineJson, depth + 1);
+                            
+                            md += `${beforeJson}\n${inlineMd}`;
+                            if (afterJson) md += `\n${afterJson}`;
+                            md += '\n';
+                            continue;
+                        } catch (e) {
+                            // 解析失败，使用原始文本
+                            console.debug('[RAGDiaryPlugin] Failed to parse inline JSON in text content:', e.message);
+                        }
+                    }
+                    
+                    md += `${textContent}\n`;
+                } else if (typeof item !== 'object') {
+                    md += `${indent}- ${item}\n`;
+                } else {
+                    md += `${this._jsonToMarkdown(item, depth)}\n`;
+                }
+            }
+        } else {
+            for (const [key, value] of Object.entries(obj)) {
+                if (value === null || value === undefined) continue;
+                
+                if (typeof value === 'object') {
+                    const subContent = this._jsonToMarkdown(value, depth + 1);
+                    if (subContent.trim()) {
+                        md += `${indent}# ${key}:\n${subContent}`;
+                    }
+                } else {
+                    // ✅ 改进：检查字符串值是否包含嵌套 JSON
+                    const valStr = String(value);
+                    
+                    // 先检查是否是 Base64 数据
+                    if (valStr.length > 200 && (valStr.includes('base64') || this._isLikelyBase64(valStr))) {
+                        md += `${indent}* **${key}**: [Data Omitted]\n`;
+                        continue;
+                    }
+                    
+                    // 检查是否包含 JSON 结构
+                    if (valStr.length > 100 && (valStr.includes('{') || valStr.includes('['))) {
+                        const nestedJsonMatch = valStr.match(/^(.*?)(\{[\s\S]*\}|\[[\s\S]*\])(.*)$/);
+                        if (nestedJsonMatch) {
+                            try {
+                                const nestedJson = JSON.parse(nestedJsonMatch[2]);
+                                const prefix = nestedJsonMatch[1].trim();
+                                const suffix = nestedJsonMatch[3].trim();
+                                const nestedMd = this._jsonToMarkdown(nestedJson, depth + 1);
+                                
+                                md += `${indent}* **${key}**: `;
+                                if (prefix) md += `${prefix} `;
+                                md += `\n${nestedMd}`;
+                                if (suffix) md += `${indent}  ${suffix}\n`;
+                                continue;
+                            } catch (e) {
+                                // 解析失败，使用原始文本
+                                console.debug(`[RAGDiaryPlugin] Failed to parse nested JSON in field "${key}":`, e.message);
+                            }
+                        }
+                    }
+                    
+                    // 默认处理
+                    md += `${indent}* **${key}**: ${valStr}\n`;
+                }
+            }
+        }
+        return md;
+    }
+
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         try {
@@ -902,31 +1038,26 @@ class RAGDiaryPlugin {
             
             // 静默处理元思考占位符
 
-            // 解析参数：链名称、修饰符和K值序列
-            // 格式: [[VCP元思考:<链名称>::<修饰符>:<k1-k2-k3-k4-k5>]]
-            // 示例: [[VCP元思考:default::Group:2-1-1-1-1]]
-            //      [[VCP元思考::Group:1-1-1-1-1]]  (使用默认链)
-            //      [[VCP元思考:2-1-1-1-1]]  (使用默认链，无修饰符)
+            // 解析参数：链名称和修饰符
+            // 格式: [[VCP元思考:<链名称>::<修饰符>]]
+            // 示例: [[VCP元思考:creative_writing::Group]]
+            //      [[VCP元思考::Group]]  (使用默认链)
+            //      [[VCP元思考::Auto::Group]]  (自动模式)
             
             let chainName = 'default';
             let useGroup = false;
-            let kSequence = [1, 1, 1, 1, 1];
             let isAutoMode = false;
             let autoThreshold = 0.65; // 默认自动切换阈值
 
             // 分析修饰符字符串
             if (modifiersAndParams) {
-                const parts = modifiersAndParams.split('::').map(p => p.trim()).filter(Boolean);
-                const allSubParts = [];
-                
-                // 扁平化处理，如果某个 part 包含 ':', 尝试按 ':' 分割，以分离修饰符和K序列如果它们被粘合在一起
-                for (const part of parts) {
-                    const potentialSubParts = part.split(':').map(p => p.trim()).filter(Boolean);
-                    allSubParts.push(...potentialSubParts);
-                }
+                // 移除开头的所有冒号，然后按 :: 分割
+                const parts = modifiersAndParams.replace(/^:+/, '').split('::').map(p => p.trim()).filter(Boolean);
 
-                for (const part of allSubParts) {
-                    if (part.toLowerCase().startsWith('auto')) {
+                for (const part of parts) {
+                    const lowerPart = part.toLowerCase();
+
+                    if (lowerPart.startsWith('auto')) {
                         isAutoMode = true;
                         const thresholdMatch = part.match(/:(\d+\.?\d*)/);
                         if (thresholdMatch) {
@@ -935,17 +1066,11 @@ class RAGDiaryPlugin {
                                 autoThreshold = parsedThreshold;
                             }
                         }
-                        // 在自动模式下，链名称强制为 default，后续逻辑会决定是否切换
+                        // 在自动模式下，链名称将由auto逻辑决定
                         chainName = 'default';
-                    } else if (part.toLowerCase() === 'group') {
+                    } else if (lowerPart === 'group') {
                         useGroup = true;
-                    } else if (part.includes('-')) {
-                        const kValues = part.split('-').map(k => {
-                            const parsed = parseInt(k.trim(), 10);
-                            return isNaN(parsed) || parsed < 1 ? 1 : parsed;
-                        });
-                        if (kValues.length > 0) kSequence = kValues;
-                    } else {
+                    } else if (part) {
                         // 如果不是 Auto 模式，才接受指定的链名称
                         if (!isAutoMode) {
                             chainName = part;
@@ -962,7 +1087,7 @@ class RAGDiaryPlugin {
                     queryVector,
                     userContent,
                     combinedQueryForDisplay,
-                    kSequence,
+                    null, // kSequence现在从JSON配置中获取，不再从占位符传递
                     useGroup,
                     isAutoMode,
                     autoThreshold
@@ -1239,19 +1364,33 @@ class RAGDiaryPlugin {
         const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery || ''));
         const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
         
-        // [修复] 处理工具结果：确保是字符串，并移除巨大的 Base64 图片数据，防止 TextChunker 崩溃
-        let rawToolText = toolResultsText || '';
-        if (typeof rawToolText !== 'string') {
-            try {
-                rawToolText = JSON.stringify(rawToolText);
-            } catch (e) {
-                rawToolText = String(rawToolText);
-            }
+        // [优化] 处理工具结果：先清理 Base64，再将 JSON 转换为 Markdown 以减少向量噪音
+        let toolContentForVector = '';
+        try {
+            let rawText = typeof toolResultsText === 'string' ? toolResultsText : JSON.stringify(toolResultsText);
+            
+            // 1. 预清理：移除各种 Base64 模式
+            const preCleanedText = rawText
+                // Data URI 格式
+                .replace(/"data:[^;]+;base64,[^"]+"/g, '"[Image Base64 Omitted]"')
+                // 纯 Base64 长字符串（超过300字符）
+                .replace(/"([A-Za-z0-9+/]{300,}={0,2})"/g, '"[Long Base64 Omitted]"');
+            
+            // 2. 解析 JSON
+            const parsedTool = JSON.parse(preCleanedText);
+            
+            // 3. 转换为 Markdown (内部还会进行二次长度/特征过滤)
+            toolContentForVector = this._jsonToMarkdown(parsedTool);
+        } catch (e) {
+            console.warn('[RAGDiaryPlugin] Tool result JSON parse failed, using fallback cleanup');
+            toolContentForVector = String(toolResultsText || '')
+                // 移除 Data URI
+                .replace(/data:[^;]+;base64,[A-Za-z0-9+/=]+/g, '[Base64 Omitted]')
+                // 移除可能的长 Base64 块
+                .replace(/[A-Za-z0-9+/]{300,}={0,2}/g, '[Long Data Omitted]');
         }
-        // 移除 data:image/xxx;base64,...... 格式的超长字符串
-        const cleanToolText = rawToolText.replace(/"data:image\/[^;]+;base64,[^"]+"/g, '"[Image Base64 Data Omitted]"');
-        
-        const sanitizedToolContent = this._stripEmoji(this._stripHtml(cleanToolText));
+
+        const sanitizedToolContent = this._stripEmoji(this._stripHtml(toolContentForVector));
 
         // 2. 并行获取所有向量
         const [userVector, aiVector, toolVector] = await Promise.all([
@@ -1463,7 +1602,7 @@ class RAGDiaryPlugin {
      * @param {Array} queryVector - 初始查询向量
      * @param {string} userContent - 用户输入内容
      * @param {string} combinedQueryForDisplay - 用于VCP广播的组合查询字符串
-     * @param {Array} kSequence - K值序列，每个元素对应一个簇的返回数量
+     * @param {Array|null} kSequence - 已废弃，K值序列现在从JSON配置中获取
      * @param {boolean} useGroup - 是否使用语义组增强
      * @param {boolean} isAutoMode - 是否为自动模式
      * @param {number} autoThreshold - 自动模式的切换阈值
@@ -1471,11 +1610,66 @@ class RAGDiaryPlugin {
      */
     async _processMetaThinkingChain(chainName, queryVector, userContent, combinedQueryForDisplay, kSequence, useGroup, isAutoMode = false, autoThreshold = 0.65) {
         
-        // 1️⃣ 生成缓存键（元思考链）
+        // 如果是自动模式，需要先决定使用哪个 chain
+        let finalChainName = chainName;
+        if (isAutoMode) {
+            let bestChain = 'default';
+            let maxSimilarity = -1;
+
+            for (const [themeName, themeVector] of Object.entries(this.metaChainThemeVectors)) {
+                const similarity = this.cosineSimilarity(queryVector, themeVector);
+                if (similarity > maxSimilarity) {
+                    maxSimilarity = similarity;
+                    bestChain = themeName;
+                }
+            }
+
+            console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 最匹配的主题是 "${bestChain}"，相似度: ${maxSimilarity.toFixed(4)}`);
+
+            if (maxSimilarity >= autoThreshold) {
+                finalChainName = bestChain;
+                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度超过阈值 ${autoThreshold}，切换到主题: ${finalChainName}`);
+            } else {
+                finalChainName = 'default';
+                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度未达到阈值，使用默认主题: ${finalChainName}`);
+            }
+        }
+        
+        console.log(`[RAGDiaryPlugin][MetaThinking] 开始处理元思考链: ${finalChainName}`);
+        
+        // 获取思维链配置
+        const chainConfig = this.metaThinkingChains.chains[finalChainName];
+        if (!chainConfig || !chainConfig.clusters || !chainConfig.kSequence) {
+            console.error(`[RAGDiaryPlugin][MetaThinking] 未找到完整的思维链配置: ${finalChainName}`);
+            return `[错误: 未找到"${finalChainName}"思维链配置]`;
+        }
+
+        const chain = chainConfig.clusters;
+        const finalKSequence = [...chainConfig.kSequence]; // 复制数组避免修改原配置
+        
+        if (!Array.isArray(chain) || chain.length === 0) {
+            console.error(`[RAGDiaryPlugin][MetaThinking] 思维链簇定义为空: ${finalChainName}`);
+            return `[错误: "${finalChainName}"思维链簇定义为空]`;
+        }
+
+        if (!Array.isArray(finalKSequence) || finalKSequence.length === 0) {
+            console.error(`[RAGDiaryPlugin][MetaThinking] K序列定义为空: ${finalChainName}`);
+            return `[错误: "${finalChainName}"K序列定义为空]`;
+        }
+
+        // 验证K值序列长度
+        if (finalKSequence.length !== chain.length) {
+            console.warn(`[RAGDiaryPlugin][MetaThinking] K值序列长度(${finalKSequence.length})与簇数量(${chain.length})不匹配`);
+            return `[错误: "${finalChainName}"的K序列长度与簇数量不匹配]`;
+        }
+
+        console.log(`[RAGDiaryPlugin][MetaThinking] 使用K序列: [${finalKSequence.join(', ')}]`);
+
+        // 1️⃣ 生成缓存键（使用最终确定的链名称和K序列）
         const cacheKey = this._generateCacheKey({
             userContent,
-            chainName,
-            kSequence,
+            chainName: finalChainName,
+            kSequence: finalKSequence,
             useGroup,
             isAutoMode
         });
@@ -1494,48 +1688,6 @@ class RAGDiaryPlugin {
 
         // 3️⃣ 缓存未命中，执行原有逻辑
         console.log(`[RAGDiaryPlugin][MetaThinking] 缓存未命中，执行元思考链...`);
-        
-        // 如果是自动模式，需要先决定使用哪个 chain
-        if (isAutoMode) {
-            let bestChain = 'default';
-            let maxSimilarity = -1;
-
-            for (const [themeName, themeVector] of Object.entries(this.metaChainThemeVectors)) {
-                const similarity = this.cosineSimilarity(queryVector, themeVector);
-                if (similarity > maxSimilarity) {
-                    maxSimilarity = similarity;
-                    bestChain = themeName;
-                }
-            }
-
-            console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 最匹配的主题是 "${bestChain}"，相似度: ${maxSimilarity.toFixed(4)}`);
-
-            if (maxSimilarity >= autoThreshold) {
-                chainName = bestChain;
-                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度超过阈值 ${autoThreshold}，切换到主题: ${chainName}`);
-            } else {
-                chainName = 'default';
-                console.log(`[RAGDiaryPlugin][MetaThinking][Auto] 相似度未达到阈值，使用默认主题: ${chainName}`);
-            }
-        }
-        
-        console.log(`[RAGDiaryPlugin][MetaThinking] 开始处理元思考链: ${chainName}`);
-        
-        // 获取思维链定义
-        const chain = this.metaThinkingChains.chains[chainName];
-        if (!chain || !Array.isArray(chain) || chain.length === 0) {
-            console.error(`[RAGDiaryPlugin][MetaThinking] 未找到思维链定义: ${chainName}`);
-            return `[错误: 未找到"${chainName}"思维链定义]`;
-        }
-
-        // 验证K值序列长度
-        if (kSequence.length !== chain.length) {
-            console.warn(`[RAGDiaryPlugin][MetaThinking] K值序列长度(${kSequence.length})与簇数量(${chain.length})不匹配，将使用默认值1填充`);
-            // 用1填充缺失的k值
-            while (kSequence.length < chain.length) {
-                kSequence.push(1);
-            }
-        }
 
         // 初始化
         let currentQueryVector = queryVector;
@@ -1558,8 +1710,8 @@ class RAGDiaryPlugin {
         // 递归遍历每个思维簇
         for (let i = 0; i < chain.length; i++) {
             const clusterName = chain[i];
-            // 两种模式都应该尊重链本身定义的k序列
-            const k = kSequence[i];
+            // 使用配置文件中定义的k序列
+            const k = finalKSequence[i];
             
             // 静默查询阶段 ${i + 1}/${chain.length}
 
@@ -1631,12 +1783,13 @@ class RAGDiaryPlugin {
             try {
                 vcpInfoData = {
                     type: 'META_THINKING_CHAIN',
-                    chainName,
+                    chainName: finalChainName,
                     query: combinedQueryForDisplay,
                     useGroup,
                     activatedGroups: activatedGroups ? Array.from(activatedGroups.keys()) : [],
                     stages: chainDetailedInfo,
-                    totalStages: chain.length
+                    totalStages: chain.length,
+                    kSequence: finalKSequence
                 };
                 this.pushVcpInfo(vcpInfoData);
                 // VCP Info 已广播（静默）
@@ -1646,7 +1799,7 @@ class RAGDiaryPlugin {
         }
 
         // 4️⃣ 保存到缓存
-        const formattedResult = this._formatMetaThinkingResults(chainResults, chainName, activatedGroups, isAutoMode);
+        const formattedResult = this._formatMetaThinkingResults(chainResults, finalChainName, activatedGroups, isAutoMode);
         this._setCachedResult(cacheKey, {
             content: formattedResult,
             vcpInfo: vcpInfoData
