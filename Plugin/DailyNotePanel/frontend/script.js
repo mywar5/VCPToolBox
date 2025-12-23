@@ -89,9 +89,11 @@
 
   // ------- 运行时状态 -------
 
+  const STREAM_NOTEBOOK = '__STREAM__';
+
   let notebooks = [];            // [{ name }]
-  let currentNotebook = null;    // string
-  let notes = [];                // 当前「源列表」（可能来自 /notes 或 /search）
+  let currentNotebook = null;    // string | STREAM_NOTEBOOK
+  let notes = [];                // 当前「源列表」（可能来自单本缓存或日记流聚合）
   let filteredNotes = [];        // 排序 + 过滤后的列表
   let bulkMode = false;          // 批量选择模式
   let selectedSet = new Set();   // `folder/name` 形式
@@ -102,7 +104,17 @@
     mode: 'edit'                 // edit | preview
   };
 
-  let lastNotesFingerprint = null; // 用于自动刷新（简单版本）
+  // 全局缓存：每个日记本自己的 notes 列表
+  // key: folderName, value: notes[]
+  let notebookCache = new Map();
+  // 每个日记本的最新 mtime，用于侧边栏发光与日记流聚合
+  // key: folderName, value: latestMtime(number)
+  let notebookLatestMtime = new Map();
+
+  // 指纹: 普通视图与日记流视图分开管理，避免模式切换时串扰
+  let lastNotesFingerprint = null;
+  let streamLastFingerprint = null;
+
   // 高亮定时器：key = `${folderName}/${note.name}`, value = { toYellow, clearAll }
   let highlightTimers = new Map();
 
@@ -258,18 +270,137 @@
     return true;
   }
 
+  function isStreamNotebook(name) {
+    return name === STREAM_NOTEBOOK;
+  }
+
+  function getVisibleNotebooks() {
+    return notebooks.filter(n => notebookVisible(n.name));
+  }
+
   // ------- 侧边栏渲染 -------
+
+  function updateSidebarActiveState() {
+    // 更新展开列表
+    const items = notebookList.querySelectorAll('.notebook-item');
+    items.forEach(item => {
+      if (item.dataset.notebook === currentNotebook) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+    });
+
+    // 更新折叠列表
+    const minis = notebookMiniList.querySelectorAll('.notebook-mini-item');
+    minis.forEach(item => {
+      if (item.dataset.notebook === currentNotebook) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  }
+
+  function updateSidebarGlow() {
+    const now = Date.now();
+    
+    // 辅助函数：处理单个 DOM 元素的 glow 类
+    const applyGlow = (el, mtime) => {
+      if (!mtime) {
+        el.classList.remove('glow-green-side', 'glow-yellow-side');
+        return;
+      }
+      const diff = now - mtime;
+      const diffMin = diff / 60000;
+      
+      el.classList.remove('glow-green-side', 'glow-yellow-side');
+      if (diffMin <= 10) {
+        el.classList.add('glow-green-side');
+      } else if (diffMin <= 30) {
+        el.classList.add('glow-yellow-side');
+      }
+    };
+
+    // 1. 处理普通日记本
+    notebookLatestMtime.forEach((mtime, name) => {
+      // 展开列表
+      const item = notebookList.querySelector(`.notebook-item[data-notebook="${name}"]`);
+      if (item) applyGlow(item, mtime);
+      // 折叠列表
+      const mini = notebookMiniList.querySelector(`.notebook-mini-item[data-notebook="${name}"]`);
+      if (mini) applyGlow(mini, mtime);
+    });
+
+    // 2. 处理日记流（取所有可见日记本中最新的 mtime）
+    // 日记流不再参与发光逻辑，仅普通日记本发光
+  }
 
   function renderNotebookLists() {
     notebookList.innerHTML = '';
     notebookMiniList.innerHTML = '';
 
-    const visibleNotebooks = notebooks.filter(n => notebookVisible(n.name));
+    const visibleNotebooks = getVisibleNotebooks();
     const activeName = currentNotebook;
 
+    // 顶部插入「日记流」条目
+    // 展开模式
+    const streamItem = document.createElement('div');
+    streamItem.className = 'notebook-item stream-item';
+    streamItem.dataset.notebook = STREAM_NOTEBOOK;
+    if (isStreamNotebook(activeName)) streamItem.classList.add('active');
+
+    const streamDot = document.createElement('div');
+    streamDot.className = 'notebook-dot stream-dot';
+
+    const streamNameSpan = document.createElement('span');
+    streamNameSpan.className = 'notebook-name';
+    streamNameSpan.textContent = '🔔 日记流';
+
+    streamItem.appendChild(streamDot);
+    streamItem.appendChild(streamNameSpan);
+    streamItem.addEventListener('click', () => {
+      // 无论当前是否已经在日记流、无论当前处于何种界面，都视为“主动切换并刷新”
+      currentNotebook = STREAM_NOTEBOOK;
+      localStorage.setItem('DailyNotePanel_LastNotebook', currentNotebook);
+      selectedSet.clear();
+      bulkMode = false;
+      updateBulkModeUI();
+      updateSidebarActiveState(); // 更新侧边栏高亮
+      // 强制回到卡片视图，并立即根据缓存重建当前视图
+      showCardsView();
+      currentPage = 1;
+      refreshCurrentViewFromCache();
+      updateSearchUIForCurrentNotebook();
+    });
+    notebookList.appendChild(streamItem);
+
+    // 折叠模式
+    const miniStream = document.createElement('div');
+    miniStream.className = 'notebook-mini-item stream-mini-item';
+    miniStream.dataset.notebook = STREAM_NOTEBOOK;
+    if (isStreamNotebook(activeName)) miniStream.classList.add('active');
+    miniStream.textContent = '🔔';
+    miniStream.addEventListener('click', () => {
+      // 折叠态同样视为主动切换：无条件刷新并回到卡片视图
+      currentNotebook = STREAM_NOTEBOOK;
+      localStorage.setItem('DailyNotePanel_LastNotebook', currentNotebook);
+      selectedSet.clear();
+      bulkMode = false;
+      updateBulkModeUI();
+      updateSidebarActiveState(); // 更新侧边栏高亮
+      showCardsView();
+      currentPage = 1;
+      refreshCurrentViewFromCache();
+      updateSearchUIForCurrentNotebook();
+    });
+    notebookMiniList.appendChild(miniStream);
+
+    // 普通日记本
     visibleNotebooks.forEach(nb => {
       const li = document.createElement('div');
       li.className = 'notebook-item';
+      li.dataset.notebook = nb.name;
       if (nb.name === activeName) li.classList.add('active');
 
       const dot = document.createElement('div');
@@ -283,13 +414,17 @@
       li.appendChild(nameSpan);
 
       li.addEventListener('click', () => {
-        if (currentNotebook === nb.name) return;
+        // 点击任意日记本标签都视为“主动切换并刷新”，包括当前正在查看的日记本
         currentNotebook = nb.name;
         localStorage.setItem('DailyNotePanel_LastNotebook', currentNotebook);
         selectedSet.clear();
         bulkMode = false;
         updateBulkModeUI();
-        loadNotesForNotebook(nb.name).catch(console.error);
+        updateSidebarActiveState(); // 更新侧边栏高亮
+        showCardsView();
+        currentPage = 1;
+        refreshCurrentViewFromCache();
+        updateSearchUIForCurrentNotebook();
       });
 
       notebookList.appendChild(li);
@@ -298,19 +433,24 @@
     visibleNotebooks.forEach(nb => {
       const mini = document.createElement('div');
       mini.className = 'notebook-mini-item';
+      mini.dataset.notebook = nb.name;
       if (nb.name === activeName) mini.classList.add('active');
 
       const firstChar = (nb.name || '').trim().charAt(0) || '?';
       mini.textContent = firstChar;
 
       mini.addEventListener('click', () => {
-        if (currentNotebook === nb.name) return;
+        // 折叠态点击同样无条件刷新并回到卡片视图
         currentNotebook = nb.name;
         localStorage.setItem('DailyNotePanel_LastNotebook', currentNotebook);
         selectedSet.clear();
         bulkMode = false;
         updateBulkModeUI();
-        loadNotesForNotebook(nb.name).catch(console.error);
+        updateSidebarActiveState(); // 更新侧边栏高亮
+        showCardsView();
+        currentPage = 1;
+        refreshCurrentViewFromCache();
+        updateSearchUIForCurrentNotebook();
       });
 
       notebookMiniList.appendChild(mini);
@@ -320,9 +460,19 @@
   // ------- 搜索 & 排序 -------
 
   async function refreshNotesUsingSearchIfNeeded() {
+    if (!searchInput) {
+      filteredNotes = sortedNotes(notes);
+      return;
+    }
+    // 日记流中禁用搜索：直接使用当前 notes
+    if (isStreamNotebook(currentNotebook)) {
+      filteredNotes = sortedNotes(notes);
+      return;
+    }
+
     const q = (searchInput.value || '').trim();
     if (!q) {
-      // 无搜索词时，notes 已由 loadNotesForNotebook 填充
+      // 无搜索词时，notes 已由缓存或单本加载填充
       filteredNotes = sortedNotes(notes);
       return;
     }
@@ -476,7 +626,20 @@
 
       const title = document.createElement('h3');
       title.className = 'note-filename';
-      title.textContent = note.name;
+      if (isStreamNotebook(currentNotebook)) {
+        // 格式：**日记本名日记本** - maid名
+        // 样式：比全局字号大一号
+        let maidName = folderName;
+        if (folderName === '代码') maidName = '方彤彤';
+
+        title.innerHTML = `<strong>${folderName}日记本</strong> - ${maidName}`;
+        title.classList.add('stream-card-title');
+        // 动态设置字号：全局字号 + 1px
+        const baseSize = settings.globalFontSize || 16;
+        title.style.fontSize = (baseSize + 1) + 'px';
+      } else {
+        title.textContent = note.name;
+      }
       header.appendChild(title);
 
       const meta = document.createElement('div');
@@ -613,6 +776,11 @@
 
     if (searchInput) {
       searchInput.addEventListener('input', () => {
+        if (isStreamNotebook(currentNotebook)) {
+          // 日记流禁用搜索：清空输入并忽略
+          searchInput.value = '';
+          return;
+        }
         recomputeAndRenderCards().catch(console.error);
       });
     }
@@ -658,14 +826,40 @@
       saveNoteButton.addEventListener('click', async () => {
         if (!editorState.folder || !editorState.file) return;
         try {
-          // 同样移除 encodeURIComponent
           await apiPost(
             `/note/${editorState.folder}/${editorState.file}`,
             { content: editorTextarea.value }
           );
-          if (currentNotebook === editorState.folder) {
-            await loadNotesForNotebook(editorState.folder);
-            await recomputeAndRenderCards();
+
+          // 保存成功后，刷新对应日记本缓存，并基于缓存重建当前视图
+          await refreshSingleNotebookCache(editorState.folder);
+
+          if (isStreamNotebook(currentNotebook)) {
+            // 当前是日记流：使用最新缓存重新聚合所有可见日记本
+            const visibleNow = getVisibleNotebooks();
+            const allNotes = [];
+            visibleNow.forEach(nb => {
+              const list = notebookCache.get(nb.name);
+              if (!Array.isArray(list) || list.length === 0) return;
+              list.forEach(note => {
+                allNotes.push({
+                  ...note,
+                  folderName: note.folderName || nb.name
+                });
+              });
+            });
+            allNotes.sort((a, b) => b.mtime - a.mtime);
+            notes = allNotes;
+            filteredNotes = allNotes;
+            currentPage = 1;
+            renderCards();
+          } else if (currentNotebook === editorState.folder) {
+            // 当前就在被编辑的日记本：从缓存重建该本视图
+            const list = notebookCache.get(editorState.folder) || [];
+            notes = list.slice();
+            filteredNotes = sortedNotes(notes);
+            currentPage = 1;
+            renderCards();
           }
           showCardsView();
         } catch (e) {
@@ -825,23 +1019,65 @@
           return;
         }
         try {
-          // 官方 API：POST /delete-batch，body: { notesToDelete: [{ folder, file }] }
           await apiPost('/delete-batch', { notesToDelete: pendingDeleteFiles });
         } catch (e) {
           console.error('[DailyNotePanel] delete error:', e);
         }
+
+        // 删除后：刷新受影响日记本的缓存，再基于缓存重建当前视图
+        const affectedFolders = new Set(
+          pendingDeleteFiles.map(item => item.folder).filter(Boolean)
+        );
         selectedSet.clear();
         pendingDeleteFiles = [];
         closeDeleteModal();
-        if (currentNotebook) {
-          await loadNotesForNotebook(currentNotebook);
-          await recomputeAndRenderCards();
+
+        for (const folder of affectedFolders) {
+          await refreshSingleNotebookCache(folder);
+        }
+
+        if (isStreamNotebook(currentNotebook)) {
+          const visibleNow = getVisibleNotebooks();
+          const allNotes = [];
+          visibleNow.forEach(nb => {
+            const list = notebookCache.get(nb.name);
+            if (!Array.isArray(list) || list.length === 0) return;
+            list.forEach(note => {
+              allNotes.push({
+                ...note,
+                folderName: note.folderName || nb.name
+              });
+            });
+          });
+          allNotes.sort((a, b) => b.mtime - a.mtime);
+          notes = allNotes;
+          filteredNotes = allNotes;
+          currentPage = 1;
+          renderCards();
+        } else if (currentNotebook) {
+          const list = notebookCache.get(currentNotebook) || [];
+          notes = list.slice();
+          filteredNotes = sortedNotes(notes);
+          currentPage = 1;
+          renderCards();
         }
       });
     }
   }
 
   // ------- 设置 UI 同步 -------
+
+  function updateSearchUIForCurrentNotebook() {
+    if (!searchInput) return;
+    if (isStreamNotebook(currentNotebook)) {
+      searchInput.disabled = true;
+      searchInput.value = '';
+      searchInput.placeholder = '日记流中不支持搜索，请在具体日记本中搜索';
+    } else {
+      searchInput.disabled = false;
+      searchInput.placeholder = '搜索当前日记本 (支持多关键词 AND)';
+    }
+  }
 
   function syncSettingsUI() {
     autoBlockClustersCheckbox.checked = !!settings.autoBlockClusters;
@@ -927,13 +1163,15 @@
       }
 
       // 验证当前选中的日记本是否有效（存在且可见）
-      const hasValidCurrent =
-        currentNotebook &&
-        notebooks.some(n => n.name === currentNotebook && notebookVisible(n.name));
+      let hasValidCurrent = false;
+      if (currentNotebook && !isStreamNotebook(currentNotebook)) {
+        hasValidCurrent =
+          notebooks.some(n => n.name === currentNotebook && notebookVisible(n.name));
+      }
 
       if (!hasValidCurrent) {
         const firstVisible = notebooks.find(n => notebookVisible(n.name));
-        currentNotebook = firstVisible ? firstVisible.name : null;
+        currentNotebook = firstVisible ? firstVisible.name : STREAM_NOTEBOOK;
       }
 
       // 确认为有效值后，更新 localStorage（防止存的是无效值）
@@ -942,29 +1180,20 @@
       }
 
       renderNotebookLists();
-      if (currentNotebook) {
-        await loadNotesForNotebook(currentNotebook);
-      } else {
-        notes = [];
-        filteredNotes = [];
-        renderCards();
-      }
       syncSettingsUI();
       applyGlobalFontSize();
-      await recomputeAndRenderCards();
+      updateSearchUIForCurrentNotebook();
+      // 初次渲染先基于空缓存构建视图，真正数据交给 autoRefreshLoop 填充
+      renderCards();
     } catch (e) {
       console.error('[DailyNotePanel] loadNotebooks error:', e);
     }
   }
 
-  async function loadNotesForNotebook(notebookName) {
+  async function refreshSingleNotebookCache(notebookName) {
     try {
-      // 官方 API 使用 /folder/:folderName 获取某个日记本下的文件列表
-      // 注意：官方 API 路由中，folderName 是直接作为路径参数，而不是查询参数
-      // 且官方 API 内部使用 path.join(root, folderName)，所以这里不需要 encodeURIComponent
-      // 否则 "文献鸟" 会变成 "%E6%96%87%E7%8C%AE%E9%B8%9F"，导致 fs.readdir 找不到目录
       const data = await apiGet('/folder/' + notebookName);
-      notes = (data.notes || []).map(n => {
+      const list = (data.notes || []).map(n => {
         const mtime =
           n.mtime != null
             ? n.mtime
@@ -979,12 +1208,61 @@
           preview: n.preview
         };
       });
-      filteredNotes = sortedNotes(notes);
-      currentPage = 1;
-      renderCards();
-      renderNotebookLists();
+      notebookCache.set(notebookName, list);
+      const latest = list.reduce(
+        (max, n) => (n.mtime > max ? n.mtime : max),
+        0
+      );
+      notebookLatestMtime.set(notebookName, latest);
     } catch (e) {
-      console.error('[DailyNotePanel] loadNotes error:', e);
+      console.error('[DailyNotePanel] refreshSingleNotebookCache error:', e);
+    }
+  }
+
+  function refreshCurrentViewFromCache() {
+    if (!currentNotebook) {
+      notes = [];
+      filteredNotes = [];
+      renderCards();
+      return;
+    }
+
+    if (isStreamNotebook(currentNotebook)) {
+      const beforeFp = computeFingerprint(filteredNotes);
+      const beforeStreamFp = streamLastFingerprint;
+
+      const visibleNow = getVisibleNotebooks();
+      const allNotes = [];
+      visibleNow.forEach(nb => {
+        const list = notebookCache.get(nb.name);
+        if (!Array.isArray(list) || list.length === 0) return;
+        list.forEach(note => {
+          allNotes.push({
+            ...note,
+            folderName: note.folderName || nb.name
+          });
+        });
+      });
+      allNotes.sort((a, b) => b.mtime - a.mtime);
+      notes = allNotes;
+      filteredNotes = allNotes;
+      
+      const fp = computeFingerprint(filteredNotes);
+      // 如果指纹变了，或者当前页面是空的（初始化状态），则刷新
+      if (fp !== beforeStreamFp || fp !== beforeFp || cardsContainer.children.length === 0) {
+        streamLastFingerprint = fp;
+        // 只有当数据发生实质性变化时才重置页码，避免轮询打断用户翻页
+        // 但如果是手动切换日记本导致的刷新，外部会重置 currentPage
+        renderCards();
+      }
+    } else {
+      const list = notebookCache.get(currentNotebook) || [];
+      const fp = computeFingerprint(list);
+      if (fp !== lastNotesFingerprint || cardsContainer.children.length === 0) {
+        notes = list.slice();
+        filteredNotes = sortedNotes(notes);
+        renderCards();
+      }
     }
   }
 
@@ -1009,47 +1287,47 @@
     }
   }
 
-  // ------- 自动刷新（简单轮询版） -------
+  // ------- 自动刷新（全局轮询版） -------
 
   async function autoRefreshLoop() {
     const INTERVAL = 10000; // 10 秒
     while (true) {
       try {
-        await new Promise(r => setTimeout(r, INTERVAL));
-        if (!currentNotebook || cardsView.classList.contains('hidden')) {
+        // 1. 视图隐藏时，短轮询检查
+        if (cardsView.classList.contains('hidden')) {
+          await new Promise(r => setTimeout(r, 1000));
           continue;
         }
-        // 无搜索词情况下才考虑轮询刷新（避免 search 结果被覆盖）
-        if ((searchInput.value || '').trim()) continue;
 
-        // 官方 API：/folder/:folderName
-        // 同样移除 encodeURIComponent，直接传递原始字符串
-        const data = await apiGet('/folder/' + currentNotebook);
-        const nextNotes = (data.notes || []).map(n => {
-          const mtime =
-            n.mtime != null
-              ? n.mtime
-              : n.lastModified
-              ? new Date(n.lastModified).getTime()
-              : 0;
-          return {
-            folderName: currentNotebook,
-            name: n.name,
-            mtime,
-            size: n.size != null ? n.size : 0,
-            preview: n.preview
-          };
-        });
-        const fp = computeFingerprint(nextNotes);
-        if (fp !== lastNotesFingerprint) {
-          notes = nextNotes;
-          filteredNotes = sortedNotes(notes);
-          currentPage = 1;
-          renderCards();
+        // 2. 有搜索词时，暂停轮询（避免覆盖搜索结果），短轮询检查
+        if (searchInput && (searchInput.value || '').trim()) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
         }
+
+        const visible = getVisibleNotebooks();
+        // 3. 如果还没有可见日记本（可能加载中），短轮询等待
+        if (visible.length === 0) {
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+
+        // 4. 并发刷新所有可见 notebook 的缓存
+        await Promise.all(
+          visible.map(nb => refreshSingleNotebookCache(nb.name))
+        );
+
+        updateSidebarGlow();
+
+        // 5. 根据当前模式，从缓存重建视图
+        refreshCurrentViewFromCache();
+
       } catch (e) {
         console.warn('[DailyNotePanel] autoRefreshLoop error:', e);
       }
+
+      // 6. 执行完一轮后等待 INTERVAL，确保首次立即执行
+      await new Promise(r => setTimeout(r, INTERVAL));
     }
   }
 
@@ -1063,10 +1341,13 @@
     if (sidebar) {
       sidebar.classList.add('collapsed');
     }
-    loadNotebooks().catch(console.error);
+    // 确保 loadNotebooks 完成（notebooks 列表就绪）后再启动轮询
+    loadNotebooks().then(() => {
+      autoRefreshLoop();
+    }).catch(console.error);
+
     showCardsView();
     applyGlobalFontSize();
-    autoRefreshLoop(); // fire and forget
 
     // 注册 Service Worker（PWA）
     if ('serviceWorker' in navigator) {
