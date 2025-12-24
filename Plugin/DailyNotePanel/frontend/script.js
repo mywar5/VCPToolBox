@@ -1157,24 +1157,42 @@
       const data = await apiGet('/folders');
       notebooks = (data.folders || []).map(name => ({ name }));
 
-      // 尝试从 localStorage 恢复上次打开的日记本
+      // 1. 先解析 URL 参数中的 notebook 指令
+      const params = new URLSearchParams(window.location.search || '');
+      const urlNotebook = params.get('notebook');
+      if (urlNotebook) {
+        if (urlNotebook === 'stream') {
+          currentNotebook = STREAM_NOTEBOOK;
+        } else {
+          // 对于指定的普通日记本名，暂时只记录下来，后面统一做有效性校验
+          currentNotebook = urlNotebook;
+        }
+      }
+
+      // 2. 若 URL 中未指定 notebook，再尝试从 localStorage 恢复
       if (!currentNotebook) {
         currentNotebook = localStorage.getItem('DailyNotePanel_LastNotebook');
       }
 
-      // 验证当前选中的日记本是否有效（存在且可见）
+      // 3. 验证当前选中的日记本是否有效：
+      //    - STREAM_NOTEBOOK 永远视为有效（即日记流模式）
+      //    - 普通日记本需要“存在且可见”
       let hasValidCurrent = false;
-      if (currentNotebook && !isStreamNotebook(currentNotebook)) {
+      if (currentNotebook === STREAM_NOTEBOOK) {
+        hasValidCurrent = true;
+      } else if (currentNotebook) {
         hasValidCurrent =
           notebooks.some(n => n.name === currentNotebook && notebookVisible(n.name));
       }
 
+      // 4. 如果当前 notebook 无效，则回退到：
+      //    - 第一个可见日记本；若没有，则回退到 STREAM_NOTEBOOK
       if (!hasValidCurrent) {
         const firstVisible = notebooks.find(n => notebookVisible(n.name));
         currentNotebook = firstVisible ? firstVisible.name : STREAM_NOTEBOOK;
       }
 
-      // 确认为有效值后，更新 localStorage（防止存的是无效值）
+      // 5. 确认为有效值后，更新 localStorage（防止存的是无效值）
       if (currentNotebook) {
         localStorage.setItem('DailyNotePanel_LastNotebook', currentNotebook);
       }
