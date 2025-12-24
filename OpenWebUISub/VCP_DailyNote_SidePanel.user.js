@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VCP DailyNote SidePanel
 // @namespace    http://tampermonkey.net/
-// @version      0.1.8
+// @version      0.1.9
 // @description  在侧边栏嵌入 VCP 日记面板，并将原网页内容向左“顶开”
 // @author       B3000Kcn & DBL1F7E5
 // @match        http(s)://your.openwebui.url:port/*
@@ -29,6 +29,10 @@
 
     // ★ 新增：要切掉的侧边栏宽度 (根据截图目测约 64px)
     const SIDEBAR_WIDTH = "51px";
+
+    // ★ 新增: 按钮距离底部的距离 (防止遮挡宿主网页的发送键/工具栏)
+    // 默认 20px，若遮挡其他内容可适当抬高
+    const BUTTON_BOTTOM = "20px";
 
     // ★ 补齐：默认进入的视图 ('stream' | '' | '文件夹名')
     const DEFAULT_VIEW = "stream";
@@ -89,12 +93,14 @@
             }
 
             #vcp-toggle-btn {
-                position: fixed; bottom: 20px; right: 20px;
+                position: fixed;
+                /* ★ 这里使用了配置变量 */
+                bottom: ${BUTTON_BOTTOM};
+                right: 20px;
                 width: 44px; height: 44px;
                 background: #333333; color: white; border-radius: 50%;
                 display: flex; align-items: center; justify-content: center;
                 cursor: pointer; z-index: 2147483648;
-                /* ★ 修改：去掉了蓝色的发光阴影，改为低调的黑色投影 */
                 box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                 transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.2s;
                 font-size: 22px; user-select: none;
