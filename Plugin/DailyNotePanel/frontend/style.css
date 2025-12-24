@@ -105,13 +105,16 @@ body {
 .notebook-item {
   display: flex;
   align-items: center;
-  padding: 6px 8px;
-  margin-bottom: 4px;
+  padding: 4px 8px;
+  margin: 2px 4px 4px;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-main);
-  transition: background-color var(--transition-fast), color var(--transition-fast), transform 0.08s ease-out;
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    transform 0.08s ease-out;
 }
 
 .notebook-item:hover {
@@ -120,7 +123,7 @@ body {
 
 .notebook-item.active {
   background-color: var(--accent);
-  color: #ffffff;
+  color: #000000;
 }
 
 .notebook-dot {
@@ -137,6 +140,24 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 侧边栏发光状态（根据最近修改时间高亮）
+   日记流（stream-item/stream-mini-item）不再参与发光，仅普通日记本发光 */
+.notebook-item.glow-green-side,
+.notebook-mini-item.glow-green-side {
+  border-color: #22c55e;
+  box-shadow:
+    0 0 0 1px rgba(34, 197, 94, 0.35),
+    0 0 10px rgba(34, 197, 94, 0.6);
+}
+
+.notebook-item.glow-yellow-side,
+.notebook-mini-item.glow-yellow-side {
+  border-color: #eab308;
+  box-shadow:
+    0 0 0 1px rgba(234, 179, 8, 0.35),
+    0 0 10px rgba(234, 179, 8, 0.6);
 }
 
 /* 折叠模式下的小圆圈列表 */
@@ -194,7 +215,7 @@ body {
 .notebook-mini-item.active {
   background-color: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: #000000;
 }
 
 /* 侧边栏底部设置按钮 */
@@ -423,6 +444,12 @@ body {
   /* 允许长单词/长路径在边界强制断行，避免卡片被撑破 */
   overflow-wrap: break-word;
   word-break: break-all;
+}
+
+/* 日记流视图中的标题：在全局字号基础上略微放大一号 */
+.stream-card-title {
+  font-size: 1.1em;
+  font-weight: 600;
 }
 
 .note-meta {
