@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VCP DailyNote SidePanel
 // @namespace    http://tampermonkey.net/
-// @version      0.1.9
+// @version      0.2.1
 // @description  在侧边栏嵌入 VCP 日记面板，并将原网页内容向左“顶开”
 // @author       B3000Kcn & DBL1F7E5
 // @match        http(s)://your.openwebui.url:port/*
@@ -11,6 +11,7 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // ==/UserScript==
 
 (function() {
@@ -45,30 +46,155 @@
     let isPanelOpen = GM_getValue('vcp_panel_open', false);
     let isInnerSidebarHidden = GM_getValue('vcp_inner_sidebar_hidden', true);
 
-    function buildUrl() {
+    // --- 核心修复：代理注入逻辑 ---
+
+    async function startProxyInjection() {
+        if (!AUTH_USER || !AUTH_PASS || AUTH_USER === "xxxxxxx") {
+            console.error("VCP SidePanel: 请配置账号密码！");
+            initUI("<h1>请在脚本中配置 VCP 账号密码</h1>");
+            return;
+        }
+
         try {
-            const urlObj = new URL(PANEL_URL);
-            urlObj.searchParams.delete('sidebar');
-            // 修复：确保变量已定义
-            if (typeof DEFAULT_VIEW !== 'undefined' && DEFAULT_VIEW) {
-                urlObj.searchParams.set('notebook', DEFAULT_VIEW);
-            }
-            return urlObj.toString();
-        } catch (e) { return PANEL_URL; }
+            // 1. 【修复关键点】挂载跨域代理通道到 unsafeWindow
+            // 这样 Iframe 里的 window.parent 才能访问到它
+            const targetWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+            targetWindow.__VCP_FETCH_PROXY__ = async (url, options) => {
+                return new Promise((resolve, reject) => {
+                    // 自动补全绝对路径
+                    if (url.startsWith("/")) {
+                        try {
+                            const urlObj = new URL(PANEL_URL);
+                            url = urlObj.origin + url;
+                        } catch(e) { console.error("URL Parse Error", e); }
+                    }
+
+                    GM_xmlhttpRequest({
+                        method: options.method || "GET",
+                        url: url,
+                        headers: {
+                            ...(options.headers || {}),
+                            "Authorization": "Basic " + btoa(AUTH_USER + ":" + AUTH_PASS),
+                            "Content-Type": "application/json"
+                        },
+                        data: options.body,
+                        onload: (res) => {
+                            resolve({
+                                ok: res.status >= 200 && res.status < 300,
+                                status: res.status,
+                                statusText: res.statusText,
+                                json: () => Promise.resolve(JSON.parse(res.responseText)),
+                                text: () => Promise.resolve(res.responseText)
+                            });
+                        },
+                        onerror: (err) => {
+                            console.error("VCP Proxy Error:", err);
+                            reject(err);
+                        }
+                    });
+                });
+            };
+
+            // 2. 并行下载静态资源
+            const authHeader = { "Authorization": "Basic " + btoa(AUTH_USER + ":" + AUTH_PASS) };
+            const download = (url) => new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({ method: "GET", url, headers: authHeader, onload: r => resolve(r.responseText), onerror: reject });
+            });
+
+            // 构造带参数的 URL
+            let targetUrl = PANEL_URL;
+            // 注意：DailyNotePanel 的 script.js 会读取 URL 参数，但 srcdoc 中 window.location.search 是空的
+            // 我们稍后在注入 JS 时手动 patch 这个问题
+
+            let html = await download(targetUrl);
+
+            // 如果 PANEL_URL 是目录，去掉末尾斜杠找父级
+            const baseUrl = PANEL_URL.endsWith('/') ? PANEL_URL : PANEL_URL + '/';
+
+            let cssContent = "";
+            let jsContent = "";
+
+            try { cssContent = await download(baseUrl + "style.css"); } catch(e) { console.warn("CSS download failed", e); }
+            try { jsContent = await download(baseUrl + "script.js"); } catch(e) { console.warn("JS download failed", e); }
+
+            // 3. 【新增】清洗原 HTML，防止 404
+            // 移除原本的 <link rel="stylesheet"> 和 <script src="...">
+            // 只保留 body 内容
+            let bodyContent = html.match(/<body[^>]*>([\s\S]*)<\/body>/i)?.[1] || "<h1>Loading Error</h1>";
+            // 移除原有的外部 script 引用 (避免 script.js 404)
+            bodyContent = bodyContent.replace(/<script[^>]+src=["'][^"']*script\.js["'][^>]*><\/script>/gi, "");
+            // 移除原有的外部 css 引用 (避免 style.css 404)
+            bodyContent = bodyContent.replace(/<link[^>]+href=["'][^"']*style\.css["'][^>]*>/gi, "");
+
+
+            // 4. 组装“特洛伊木马” HTML
+            const finalHtml = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="utf-8">
+                    <title>VCP Panel</title>
+                    <style>
+                        /* 注入下载好的 CSS */
+                        ${cssContent}
+
+                        /* 强制覆盖滚动条样式，防止出现双滚动条 */
+                        body { overflow-y: auto; background-color: #1e1e1e; }
+                        ::-webkit-scrollbar { width: 6px; }
+                        ::-webkit-scrollbar-track { background: transparent; }
+                        ::-webkit-scrollbar-thumb { background: rgba(100, 100, 100, 0.4); border-radius: 3px; }
+                    </style>
+                </head>
+                <body>
+                    ${bodyContent}
+
+                    <!-- 注入核心劫持逻辑 -->
+                    <script>
+                        // A. 劫持 fetch
+                        // 这样 script.js 里的 fetch('/dailynote_api/...') 就会被转发
+                        window.fetch = async (input, init) => {
+                            // 检查父窗口代理是否存在
+                            if (window.parent && window.parent.__VCP_FETCH_PROXY__) {
+                                return window.parent.__VCP_FETCH_PROXY__(input, init || {});
+                            } else {
+                                console.error("VCP Proxy Bridge Broken!");
+                                throw new Error("Proxy Bridge Broken");
+                            }
+                        };
+
+                        // B. 手动模拟 URL 参数 (Patch)
+                        // 因为 srcdoc 的 URL 是 about:srcdoc，没有 search 参数
+                        // 我们直接修改 history 状态或者拦截 URLSearchParams (更简单的是直接定义全局变量供修改后的 script.js 读取，
+                        // 但为了不改动 script.js，我们尝试 pushState)
+                        try {
+                           window.history.replaceState({}, '', '?notebook=${DEFAULT_VIEW}');
+                        } catch(e) { console.log("State patch skipped"); }
+
+                        // C. 禁用 Service Worker (避免 sw.js 404)
+                        if ('serviceWorker' in navigator) {
+                            navigator.serviceWorker.register = () => Promise.reject("SW Disabled in Proxy Mode");
+                        }
+
+                        // D. 执行下载好的业务逻辑
+                        ${jsContent}
+                    </script>
+                </body>
+                </html>
+            `;
+
+            // 5. 初始化 UI
+            initUI(finalHtml);
+
+        } catch (e) {
+            console.error("VCP SidePanel Init Failed:", e);
+            initUI(`<h3>Load Failed</h3><pre>${e.message}</pre>`);
+        }
     }
 
-    function preAuthAndInit() {
-        if (!AUTH_USER || !AUTH_PASS) { init(); return; }
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: PANEL_URL,
-            headers: { "Authorization": "Basic " + btoa(AUTH_USER + ":" + AUTH_PASS) },
-            onload: () => init(),
-            onerror: () => init()
-        });
-    }
+    // --- UI 初始化与交互逻辑 (保持不变) ---
 
-    function init() {
+    function initUI(srcdocContent) {
         if (document.getElementById('vcp-side-panel-container')) return;
 
         GM_addStyle(`
@@ -90,11 +216,11 @@
                 height: calc(100% / ${PANEL_ZOOM});
                 transition: margin-left 0.3s ease, width 0.3s ease;
                 display: block;
+                width: 100%;
             }
 
             #vcp-toggle-btn {
                 position: fixed;
-                /* ★ 这里使用了配置变量 */
                 bottom: ${BUTTON_BOTTOM};
                 right: 20px;
                 width: 44px; height: 44px;
@@ -108,7 +234,6 @@
             #vcp-toggle-btn:hover {
                 transform: scale(1.1);
                 background: #ffb46e;
-                /* 悬停时稍微亮一点点，或者也可以去掉 */
                 box-shadow: 0 4px 8px rgba(0,0,0,0.3);
             }
             #vcp-toggle-btn.panel-open { right: calc(${PANEL_WIDTH} + 20px); }
@@ -131,7 +256,8 @@
 
         const iframe = document.createElement('iframe');
         iframe.id = 'vcp-iframe';
-        iframe.src = buildUrl();
+        // 使用 srcdoc
+        iframe.srcdoc = srcdocContent;
         container.appendChild(iframe);
 
         const sidebarToggleBtn = document.createElement('div');
@@ -145,7 +271,7 @@
 
         const btn = document.createElement('div');
         btn.id = 'vcp-toggle-btn';
-        btn.innerHTML = '📓'; // 小本子图标
+        btn.innerHTML = '📓';
         btn.onclick = togglePanel;
         document.body.appendChild(btn);
 
@@ -205,5 +331,5 @@
         }
     }
 
-    preAuthAndInit();
+    startProxyInjection();
 })();
