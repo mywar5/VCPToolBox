@@ -8,6 +8,9 @@ let monitorIntervalId = null;
 let activityDataPoints = new Array(60).fill(0);
 let lastLogCheckTime = null;
 
+let logoClickCount = 0;
+let logoClickTimer = null;
+
 /**
  * 初始化仪表盘，设置定时器并加载初始数据。
  */
@@ -30,6 +33,54 @@ export function initializeDashboard() {
              drawActivityChart();
         });
     }, 5000);
+
+    // 彩蛋逻辑：点击5次logo进入沉浸模式
+    const logo = document.getElementById('vcp-logo-main');
+    if (logo && !logo.dataset.easterEggInitialized) {
+        logo.addEventListener('click', () => {
+            logoClickCount++;
+            clearTimeout(logoClickTimer);
+            if (logoClickCount >= 5) {
+                enterImmersiveMode();
+                logoClickCount = 0;
+            } else {
+                logoClickTimer = setTimeout(() => {
+                    logoClickCount = 0;
+                }, 2000);
+            }
+        });
+        logo.dataset.easterEggInitialized = 'true';
+    }
+
+    const exitBtn = document.getElementById('exit-immersive-button');
+    if (exitBtn && !exitBtn.dataset.easterEggInitialized) {
+        exitBtn.addEventListener('click', exitImmersiveMode);
+        exitBtn.dataset.easterEggInitialized = 'true';
+    }
+}
+
+/**
+ * 进入太阳系沉浸观景模式
+ */
+function enterImmersiveMode() {
+    const bg = document.querySelector('.solar-system-bg');
+    if (bg) {
+        bg.classList.add('immersive-mode');
+        document.body.style.overflow = 'hidden';
+        console.log('Entering immersive solar system mode...');
+    }
+}
+
+/**
+ * 退出沉浸模式
+ */
+function exitImmersiveMode() {
+    const bg = document.querySelector('.solar-system-bg');
+    if (bg) {
+        bg.classList.remove('immersive-mode');
+        document.body.style.overflow = '';
+        console.log('Exiting immersive mode.');
+    }
 }
 
 /**

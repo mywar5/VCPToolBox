@@ -74,8 +74,15 @@ html[data-theme='dark'] {
     --text-color-secondary: var(--secondary-text-dark);
     --star-color: #ffffff;
     --sun-color: #ffcc33;
-    --planet-color: #8ab4f8;
     --orbit-color: rgba(255, 255, 255, 0.1);
+    --mercury-color: #999999;
+    --venus-color: #e3bb76;
+    --earth-color: #2271b3;
+    --mars-color: #e27b58;
+    --jupiter-color: #d39c7e;
+    --saturn-color: #c5ab6e;
+    --uranus-color: #b5e1e9;
+    --neptune-color: #27468e;
 }
 
 html[data-theme='light'] {
@@ -108,8 +115,15 @@ html[data-theme='light'] {
     --text-color-secondary: var(--secondary-text-light);
     --star-color: #1a73e8;
     --sun-color: #f9ab00;
-    --planet-color: #0284c7;
     --orbit-color: rgba(0, 0, 0, 0.05);
+    --mercury-color: #70757a;
+    --venus-color: #b08d57;
+    --earth-color: #1a73e8;
+    --mars-color: #c53929;
+    --jupiter-color: #a56e4d;
+    --saturn-color: #967d44;
+    --uranus-color: #4d90fe;
+    --neptune-color: #3c4043;
 }
 
 body {
@@ -137,7 +151,72 @@ body {
     overflow: hidden;
     pointer-events: none;
     background: transparent;
+    transition: z-index 0.5s step-end, background 0.5s ease;
 }
+
+.solar-system-bg.immersive-mode {
+    z-index: 9999;
+    pointer-events: auto;
+    background: radial-gradient(ellipse at bottom, #1B2735 0%, #090A0F 100%);
+    transition: z-index 0s, background 2s ease;
+}
+
+.exit-immersive-button {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    opacity: 0;
+    pointer-events: none;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 10px 20px;
+    border-radius: 20px;
+    cursor: pointer;
+    backdrop-filter: blur(5px);
+    transition: all 0.3s ease;
+}
+
+.exit-immersive-button:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+.solar-system-bg.immersive-mode .exit-immersive-button {
+    opacity: 1;
+    pointer-events: auto;
+    transition: opacity 1s ease 1s;
+}
+
+.sun, .orbit, .planet {
+    transition: all 1.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.solar-system-bg.immersive-mode .sun {
+    opacity: 1;
+    width: 120px;
+    height: 120px;
+    box-shadow: 0 0 80px var(--sun-color);
+}
+
+.solar-system-bg.immersive-mode .orbit-mercury { width: 250px; height: 250px; }
+.solar-system-bg.immersive-mode .orbit-venus { width: 380px; height: 380px; }
+.solar-system-bg.immersive-mode .orbit-earth { width: 550px; height: 550px; }
+.solar-system-bg.immersive-mode .orbit-mars { width: 720px; height: 720px; }
+.solar-system-bg.immersive-mode .orbit-jupiter { width: 1000px; height: 1000px; }
+.solar-system-bg.immersive-mode .orbit-saturn { width: 1300px; height: 1300px; }
+.solar-system-bg.immersive-mode .orbit-uranus { width: 1600px; height: 1600px; }
+.solar-system-bg.immersive-mode .orbit-neptune { width: 1900px; height: 1900px; }
+
+.solar-system-bg.immersive-mode .planet-mercury { width: 12px; height: 12px; }
+.solar-system-bg.immersive-mode .planet-venus { width: 22px; height: 22px; }
+.solar-system-bg.immersive-mode .planet-earth { width: 24px; height: 24px; }
+.solar-system-bg.immersive-mode .planet-mars { width: 18px; height: 18px; }
+.solar-system-bg.immersive-mode .planet-jupiter { width: 64px; height: 64px; }
+.solar-system-bg.immersive-mode .planet-saturn { width: 56px; height: 56px; }
+.solar-system-bg.immersive-mode .planet-uranus { width: 36px; height: 36px; }
+.solar-system-bg.immersive-mode .planet-neptune { width: 36px; height: 36px; }
 
 .sun {
     position: absolute;
@@ -172,15 +251,36 @@ body {
     transform: translate(-50%, -50%);
 }
 
-.orbit-1 { width: 150px; height: 150px; animation: rotate 20s linear infinite; }
-.orbit-2 { width: 250px; height: 250px; animation: rotate 35s linear infinite; }
-.orbit-3 { width: 400px; height: 400px; animation: rotate 50s linear infinite; }
-.orbit-4 { width: 600px; height: 600px; animation: rotate 80s linear infinite; }
+.orbit-mercury { width: 100px; height: 100px; animation: rotate 8.8s linear infinite; }
+.orbit-venus { width: 160px; height: 160px; animation: rotate 22.5s linear infinite; }
+.orbit-earth { width: 240px; height: 240px; animation: rotate 36.5s linear infinite; }
+.orbit-mars { width: 320px; height: 320px; animation: rotate 68.7s linear infinite; }
+.orbit-jupiter { width: 480px; height: 480px; animation: rotate 118.6s linear infinite; }
+.orbit-saturn { width: 640px; height: 640px; animation: rotate 294.5s linear infinite; }
+.orbit-uranus { width: 800px; height: 800px; animation: rotate 840.1s linear infinite; }
+.orbit-neptune { width: 960px; height: 960px; animation: rotate 1647.9s linear infinite; }
 
-.planet-1 { width: 6px; height: 6px; }
-.planet-2 { width: 10px; height: 10px; }
-.planet-3 { width: 12px; height: 12px; }
-.planet-4 { width: 14px; height: 14px; }
+.planet-mercury { width: 4px; height: 4px; background: var(--mercury-color); }
+.planet-venus { width: 8px; height: 8px; background: var(--venus-color); }
+.planet-earth { width: 9px; height: 9px; background: var(--earth-color); }
+.planet-mars { width: 6px; height: 6px; background: var(--mars-color); }
+.planet-jupiter { width: 24px; height: 24px; background: var(--jupiter-color); }
+.planet-saturn { width: 20px; height: 20px; background: var(--saturn-color); }
+.planet-uranus { width: 14px; height: 14px; background: var(--uranus-color); }
+.planet-neptune { width: 14px; height: 14px; background: var(--neptune-color); }
+
+/* Saturn Ring */
+.planet-saturn::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 34px;
+    height: 10px;
+    border: 2px solid rgba(197, 171, 110, 0.4);
+    border-radius: 50%;
+    transform: translate(-50%, -50%) rotateX(70deg);
+}
 
 @keyframes rotate {
     from { transform: translate(-50%, -50%) rotate(0deg); }
@@ -485,6 +585,13 @@ body {
     max-height: 80%;
     height: auto;
     animation: laser-outline-orbit 4s infinite linear;
+    cursor: pointer;
+    user-select: none;
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.vcp-logo:active {
+    transform: scale(0.95);
 }
 
 @keyframes laser-outline-orbit {
