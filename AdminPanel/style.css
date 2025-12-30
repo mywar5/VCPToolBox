@@ -161,6 +161,24 @@ body {
     transition: z-index 0s, background 2s ease;
 }
 
+/* UI Hiding Classes */
+.ui-hidden-immersive .top-bar {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.ui-hidden-immersive .sidebar {
+    transform: translateX(-100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.ui-hidden-immersive .content {
+    opacity: 0;
+    pointer-events: none;
+}
+
 .exit-immersive-button {
     position: absolute;
     top: 20px;
@@ -417,7 +435,7 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.8s ease, width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .sidebar-header {
@@ -524,6 +542,7 @@ body {
     padding: 30px 40px;
     box-sizing: border-box;
     overflow-y: auto;
+    transition: opacity 0.8s ease;
 }
 
 .config-section {
@@ -884,6 +903,7 @@ body {
     border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
+    transition: transform 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.8s ease;
 }
 .top-bar-content {
     display: flex;

@@ -66,6 +66,7 @@ function enterImmersiveMode() {
     const bg = document.querySelector('.solar-system-bg');
     if (bg) {
         bg.classList.add('immersive-mode');
+        document.documentElement.classList.add('ui-hidden-immersive');
         document.body.style.overflow = 'hidden';
         console.log('Entering immersive solar system mode...');
     }
@@ -78,6 +79,7 @@ function exitImmersiveMode() {
     const bg = document.querySelector('.solar-system-bg');
     if (bg) {
         bg.classList.remove('immersive-mode');
+        document.documentElement.classList.remove('ui-hidden-immersive');
         document.body.style.overflow = '';
         console.log('Exiting immersive mode.');
     }
