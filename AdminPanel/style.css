@@ -541,12 +541,18 @@ body {
     flex-grow: 1;
     padding: 30px 40px;
     box-sizing: border-box;
-    overflow-y: auto;
+    overflow-y: auto !important;
+    height: 100%;
     transition: opacity 0.8s ease;
 }
 
 .config-section {
-    display: none;
+    display: none !important;
+    position: absolute !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    overflow: hidden !important;
+    pointer-events: none !important;
     animation: fadeIn 0.5s ease-out;
 }
 
@@ -556,7 +562,19 @@ body {
 }
 
 .config-section.active-section {
-    display: block;
+    display: block !important;
+    position: relative !important;
+    visibility: visible !important;
+    height: auto !important;
+    overflow: visible !important;
+    pointer-events: auto !important;
+}
+
+/* 特别处理含 iframe 的 section，确保离开时完全不占空间 */
+.config-section:not(.active-section) iframe {
+    display: none !important;
+    height: 0 !important;
+    width: 0 !important;
 }
 
 .config-section h2 {

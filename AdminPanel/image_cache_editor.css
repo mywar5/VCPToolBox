@@ -9,8 +9,9 @@ body {
 }
 .container {
     display: block; /* Override display:flex from style.css */
-    max-width: 1400px;
-    margin: auto;
+    width: 100%;
+    max-width: none;
+    margin: 0;
     background-color: var(--secondary-bg);
     padding: 20px;
     border-radius: 12px;
