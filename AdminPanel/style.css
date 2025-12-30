@@ -2279,3 +2279,269 @@ html[data-theme='light'] .delete-theme-btn {
         width: 45px;
     }
 }
+
+/* --- Schedule Manager Styles --- */
+.schedule-manager-container {
+    display: grid;
+    grid-template-columns: 1fr 1.5fr;
+    gap: 30px;
+    height: calc(100% - 80px);
+}
+
+@media (max-width: 1200px) {
+    .schedule-manager-container {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+}
+
+.schedule-left-panel, .schedule-right-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.card {
+    background-color: var(--secondary-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    padding: 25px;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+}
+
+.calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+}
+
+.calendar-header h3 {
+    margin: 0;
+    font-size: 1.2em;
+    color: var(--primary-text);
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 5px;
+    text-align: center;
+}
+
+.calendar-day-head {
+    font-weight: 700;
+    font-size: 0.8em;
+    color: var(--secondary-text);
+    padding: 10px 0;
+    text-transform: uppercase;
+}
+
+.calendar-day {
+    aspect-ratio: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-size: 0.95em;
+    position: relative;
+}
+
+.calendar-day:hover {
+    background-color: var(--accent-bg);
+}
+
+.calendar-day.today {
+    background-color: var(--primary-color-translucent);
+    color: var(--highlight-text);
+    font-weight: 700;
+}
+
+.calendar-day.selected {
+    background-color: var(--button-bg);
+    color: white;
+}
+
+.calendar-day.other-month {
+    opacity: 0.3;
+}
+
+.calendar-day .dot {
+    width: 6px;
+    height: 6px;
+    background-color: var(--highlight-text);
+    border-radius: 50%;
+    position: absolute;
+    bottom: 5px;
+}
+
+.calendar-day.selected .dot {
+    background-color: white;
+}
+
+.add-schedule-form h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.1em;
+}
+
+.schedule-list-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 500px;
+}
+
+.list-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 15px;
+}
+
+.list-header h3 {
+    margin: 0;
+}
+
+.list-filters {
+    display: flex;
+    gap: 10px;
+}
+
+.filter-btn {
+    padding: 5px 12px;
+    font-size: 0.85em;
+    border-radius: 15px;
+    background-color: var(--tertiary-bg);
+    color: var(--secondary-text);
+}
+
+.filter-btn.active {
+    background-color: var(--highlight-text);
+    color: white;
+}
+
+.schedule-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.schedule-item {
+    background-color: var(--tertiary-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    transition: all 0.2s ease;
+}
+
+.schedule-item:hover {
+    border-color: var(--highlight-text);
+    transform: scale(1.01);
+}
+
+.schedule-info {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.schedule-time {
+    font-size: 0.85em;
+    color: var(--highlight-text);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.schedule-content {
+    font-size: 1em;
+    color: var(--primary-text);
+    word-break: break-all;
+}
+
+.delete-schedule-btn {
+    color: var(--secondary-text);
+    transition: color 0.2s;
+}
+
+.delete-schedule-btn:hover {
+    color: var(--danger-color);
+}
+
+.empty-msg {
+    text-align: center;
+    color: var(--secondary-text);
+    padding: 40px 0;
+    font-style: italic;
+}
+
+/* --- Calendar Widget (Dashboard) --- */
+.calendar-widget {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.widget-calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+}
+
+.widget-day {
+    aspect-ratio: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.8em;
+    border-radius: 4px;
+    position: relative;
+}
+
+.widget-day.has-event::after {
+    content: '';
+    position: absolute;
+    bottom: 2px;
+    width: 4px;
+    height: 4px;
+    background-color: var(--highlight-text);
+    border-radius: 50%;
+}
+
+.widget-day.today {
+    background-color: var(--primary-color-translucent);
+    color: var(--highlight-text);
+    font-weight: bold;
+}
+
+.upcoming-events-mini {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.mini-event-item {
+    font-size: 0.85em;
+    padding: 6px 10px;
+    background-color: var(--tertiary-bg);
+    border-radius: 6px;
+    border-left: 3px solid var(--highlight-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}

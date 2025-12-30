@@ -927,6 +927,81 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     });
     // --- End TVS Variable Files API ---
 
+    // --- Schedule Manager API ---
+    const SCHEDULE_FILE = path.join(__dirname, '..', 'Plugin', 'ScheduleManager', 'schedules.json');
+
+    adminApiRouter.get('/schedules', async (req, res) => {
+        try {
+            let schedules = [];
+            try {
+                const content = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(content);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+            res.json(schedules);
+        } catch (error) {
+            console.error('[AdminAPI] Error getting schedules:', error);
+            res.status(500).json({ error: 'Failed to get schedules', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/schedules', async (req, res) => {
+        try {
+            const { time, content } = req.body;
+            if (!time || !content) {
+                return res.status(400).json({ error: 'Time and content are required.' });
+            }
+            
+            let schedules = [];
+            try {
+                const fileContent = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(fileContent);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+
+            const newSchedule = {
+                id: Date.now().toString(),
+                time,
+                content
+            };
+            schedules.push(newSchedule);
+            await fs.writeFile(SCHEDULE_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
+            res.json({ status: 'success', result: `日程已添加。ID: ${newSchedule.id}`, schedule: newSchedule });
+        } catch (error) {
+            console.error('[AdminAPI] Error adding schedule:', error);
+            res.status(500).json({ error: 'Failed to add schedule', details: error.message });
+        }
+    });
+
+    adminApiRouter.delete('/schedules/:id', async (req, res) => {
+        try {
+            const { id } = req.params;
+            let schedules = [];
+            try {
+                const fileContent = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(fileContent);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+
+            const initialLength = schedules.length;
+            schedules = schedules.filter(s => s.id !== id);
+            
+            if (schedules.length === initialLength) {
+                return res.status(404).json({ error: `未找到 ID 为 ${id} 的日程。` });
+            }
+
+            await fs.writeFile(SCHEDULE_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
+            res.json({ status: 'success', result: `日程 ${id} 已删除。` });
+        } catch (error) {
+            console.error('[AdminAPI] Error deleting schedule:', error);
+            res.status(500).json({ error: 'Failed to delete schedule', details: error.message });
+        }
+    });
+    // --- End Schedule Manager API ---
+
     // --- RAG Tags API ---
     adminApiRouter.get('/rag-tags', async (req, res) => {
         const ragTagsPath = path.join(__dirname, '..', 'Plugin', 'RAGDiaryPlugin', 'rag_tags.json');

@@ -1,5 +1,6 @@
 // AdminPanel/js/dashboard.js
 import { apiFetch } from './utils.js';
+import { initializeCalendarWidget } from './schedule-manager.js';
 
 const MONITOR_API_BASE_URL = '/admin_api/system-monitor';
 const API_BASE_URL = '/admin_api';
@@ -21,6 +22,7 @@ export function initializeDashboard() {
     }
     updateDashboardData();
     updateWeatherData();
+    initializeCalendarWidget();
     
     updateActivityChart().then(() => {
         drawActivityChart();
@@ -29,6 +31,7 @@ export function initializeDashboard() {
     monitorIntervalId = setInterval(() => {
         updateDashboardData();
         updateWeatherData();
+        initializeCalendarWidget();
         updateActivityChart().then(() => {
              drawActivityChart();
         });

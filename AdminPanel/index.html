@@ -362,6 +362,7 @@
                     <li><a href="#" data-target="tool-list-editor"><span class="material-symbols-outlined">construction</span>工具列表配置编辑器</a></li>
                     <li><a href="#" data-target="preprocessor-order-manager"><span class="material-symbols-outlined">sort</span>预处理器顺序管理</a></li>
                     <li><a href="#" data-target="thinking-chains-editor"><span class="material-symbols-outlined">psychology</span>思维链编辑器</a></li>
+                    <li><a href="#" data-target="schedule-manager"><span class="material-symbols-outlined">calendar_month</span>日程管理</a></li>
                     <li><a href="#" data-target="server-log-viewer"><span class="material-symbols-outlined">terminal</span>服务器日志</a></li>
                     <li class="nav-category" id="plugins-category">———— 插 件 管 理 ————</li>
                     <!-- 插件列表将动态生成在这里 -->
@@ -453,6 +454,12 @@
                             <div class="weather-forecast" id="weather-forecast">
                                 <!-- 预报内容将动态加载 -->
                             </div>
+                        </div>
+                    </div>
+                    <div class="status-card calendar-card">
+                        <h3>日程概览</h3>
+                        <div id="dashboard-calendar-widget" class="calendar-widget">
+                            <!-- 日历挂件将动态加载到这里 -->
                         </div>
                     </div>
                 </div>
@@ -720,6 +727,52 @@
                </div>
                <div id="forum-posts-container" class="forum-posts-container">
                    <!-- Forum posts will be loaded here -->
+               </div>
+           </section>
+
+           <!-- Section: Schedule Manager -->
+           <section id="schedule-manager-section" class="config-section">
+               <h2>日程管理</h2>
+               <div class="schedule-manager-container">
+                   <div class="schedule-left-panel">
+                       <div class="calendar-container card">
+                           <div class="calendar-header">
+                               <button id="prev-month" class="icon-btn"><span class="material-symbols-outlined">chevron_left</span></button>
+                               <h3 id="current-month-year">2023年 10月</h3>
+                               <button id="next-month" class="icon-btn"><span class="material-symbols-outlined">chevron_right</span></button>
+                           </div>
+                           <div id="calendar-grid" class="calendar-grid">
+                               <!-- 日历格子 -->
+                           </div>
+                       </div>
+                       <div class="add-schedule-form card">
+                           <h3>添加新日程</h3>
+                           <div class="form-group">
+                               <label for="new-schedule-time">时间</label>
+                               <input type="datetime-local" id="new-schedule-time">
+                           </div>
+                           <div class="form-group">
+                               <label for="new-schedule-content">内容</label>
+                               <textarea id="new-schedule-content" rows="3" placeholder="输入日程内容..."></textarea>
+                           </div>
+                           <button id="add-schedule-btn" class="primary-btn">添加日程</button>
+                       </div>
+                   </div>
+                   <div class="schedule-right-panel">
+                       <div class="schedule-list-container card">
+                           <div class="list-header">
+                               <h3>日程列表</h3>
+                               <div class="list-filters">
+                                   <button id="filter-all" class="filter-btn active">全部</button>
+                                   <button id="filter-upcoming" class="filter-btn">即将到来</button>
+                               </div>
+                           </div>
+                           <div id="schedule-list" class="schedule-list">
+                               <!-- 日程条目 -->
+                               <p class="empty-msg">加载中...</p>
+                           </div>
+                       </div>
+                   </div>
                </div>
            </section>
         </main>
