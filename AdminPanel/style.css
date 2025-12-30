@@ -733,8 +733,20 @@ body {
     transition: stroke-dashoffset 0.5s ease-out;
 }
 
+.progress-circle .progress-bar-secondary {
+    fill: none;
+    stroke: var(--highlight-text);
+    stroke-width: 6; /* 稍微变细，嵌套在主进度条内 */
+    stroke-linecap: round;
+    stroke-dasharray: 339.292;
+    stroke-dashoffset: 339.292;
+    transition: stroke-dashoffset 0.5s ease-out;
+    opacity: 1; /* 提高不透明度 */
+}
+
 .cpu-card .progress-bar { stroke: var(--cpu-color); }
 .memory-card .progress-bar { stroke: var(--memory-color); }
+.memory-card .progress-bar-secondary { stroke: #f9ab00; } /* 使用高反差的黄色 (PM2 启动色) 区分 VCP 占用 */
 
 .progress-text {
     position: absolute;

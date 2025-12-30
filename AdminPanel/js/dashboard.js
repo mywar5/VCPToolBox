@@ -136,8 +136,10 @@ async function updateDashboardData() {
         if (memProgress && memUsageText && memInfoText) {
             const memUsed = resources.system.memory.used;
             const memTotal = resources.system.memory.total;
+            const vcpMemUsed = resources.system.nodeProcess.memory.rss;
             const memUsage = memTotal > 0 ? ((memUsed / memTotal) * 100).toFixed(1) : 0;
-            updateProgressCircle(memProgress, memUsageText, memUsage);
+            const vcpMemUsage = memTotal > 0 ? ((vcpMemUsed / memTotal) * 100).toFixed(1) : 0;
+            updateProgressCircle(memProgress, memUsageText, memUsage, vcpMemUsage);
             memInfoText.innerHTML = `已用: ${(memUsed / 1024 / 1024 / 1024).toFixed(2)} GB <br> 总共: ${(memTotal / 1024 / 1024 / 1024).toFixed(2)} GB`;
         }
         
@@ -285,7 +287,7 @@ async function updateWeatherData() {
  * @param {HTMLElement} textElement - 显示百分比的文本元素
  * @param {number} percentage - 百分比
  */
-function updateProgressCircle(circleElement, textElement, percentage) {
+function updateProgressCircle(circleElement, textElement, percentage, secondaryPercentage = null) {
     const radius = 54;
     const circumference = 2 * Math.PI * radius;
     const offset = circumference - (percentage / 100) * circumference;
@@ -294,6 +296,15 @@ function updateProgressCircle(circleElement, textElement, percentage) {
     if (progressBar) {
         progressBar.style.strokeDashoffset = offset;
     }
+
+    if (secondaryPercentage !== null) {
+        const secondaryProgressBar = circleElement.querySelector('.progress-bar-secondary');
+        if (secondaryProgressBar) {
+            const secondaryOffset = circumference - (secondaryPercentage / 100) * circumference;
+            secondaryProgressBar.style.strokeDashoffset = secondaryOffset;
+        }
+    }
+
     if (textElement) {
         textElement.textContent = `${percentage}%`;
     }
