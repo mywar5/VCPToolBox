@@ -1534,6 +1534,102 @@ button[type="submit"]:hover {
 }
 
 
+/* --- Log Viewer Styles --- */
+.log-viewer-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    height: calc(100% - 60px);
+}
+
+.log-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    padding: 15px 20px;
+    background-color: var(--secondary-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+
+#server-log-content {
+    flex-grow: 1;
+    font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background-color: #0f172a; /* 强制深色背景以符合日志习惯 */
+    color: #e2e8f0;
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    overflow-y: auto;
+    overflow-x: auto;
+    white-space: pre;
+    margin: 0;
+    will-change: scroll-position;
+    contain: content;
+}
+
+html[data-theme='light'] #server-log-content {
+    background-color: #1e293b;
+}
+
+#server-log-content mark.highlight,
+#server-log-content .highlight {
+    background-color: #eab308;
+    color: #000;
+    padding: 1px 3px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+.status-message {
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 0.85em;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.status-message.info { background-color: var(--button-bg); color: white; }
+.status-message.success { background-color: var(--memory-color); color: white; }
+.status-message.error { background-color: var(--danger-color); color: white; }
+
+#server-log-filter {
+    padding: 8px 15px;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background-color: var(--input-bg);
+    color: var(--primary-text);
+    width: 250px;
+    transition: all 0.2s ease;
+}
+
+#server-log-filter:focus {
+    outline: none;
+    border-color: var(--highlight-text);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--highlight-text) 20%, transparent);
+}
+
+#server-log-line-count {
+    font-size: 0.9em;
+    color: var(--secondary-text);
+    font-weight: 500;
+}
+
+#server-log-path-display {
+    font-size: 0.9em;
+    color: var(--secondary-text);
+    max-width: 400px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* Server Activity Chart Styles */
 .activity-chart-container {
     margin-top: 30px;

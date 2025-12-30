@@ -12,6 +12,9 @@ const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
 const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
+// 记录每个日志文件的 inode，用于检测日志轮转
+const logFileInodes = new Map();
+
 module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
     const adminApiRouter = express.Router();
 
@@ -154,9 +157,76 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             return res.status(503).json({ error: 'Server log path not available.', content: '服务器日志路径当前不可用，可能仍在初始化中。' });
         }
         try {
-            await fs.access(logPath);
-            const content = await fs.readFile(logPath, 'utf-8');
-            res.json({ content: content, path: logPath });
+            const stats = await fs.stat(logPath);
+            const currentInode = stats.ino;
+            const fileSize = stats.size;
+
+            // 检查是否请求增量读取
+            const incremental = req.query.incremental === 'true';
+            const offset = parseInt(req.query.offset || '0', 10);
+
+            // 检测日志轮转（inode 变化或文件变小）
+            const lastInode = logFileInodes.get(logPath);
+            if (incremental && lastInode && (currentInode !== lastInode || offset > fileSize)) {
+                logFileInodes.set(logPath, currentInode);
+                return res.json({
+                    needFullReload: true,
+                    path: logPath,
+                    offset: 0
+                });
+            }
+
+            logFileInodes.set(logPath, currentInode);
+
+            let content = '';
+            let newOffset = 0;
+
+            const fd = await fs.open(logPath, 'r');
+            try {
+                if (incremental && offset >= 0 && offset <= fileSize) {
+                    // 增量读取：从 offset 位置开始
+                    const bufferSize = fileSize - offset;
+                    if (bufferSize > 0) {
+                        const buffer = Buffer.alloc(bufferSize);
+                        const { bytesRead } = await fd.read(buffer, 0, bufferSize, offset);
+                        content = buffer.toString('utf-8', 0, bytesRead);
+                    }
+                    newOffset = fileSize;
+                } else {
+                    // 完整读取（但限制大小）
+                    const maxReadSize = 2 * 1024 * 1024; // 2MB
+                    let startPos = 0;
+                    let readSize = fileSize;
+
+                    if (fileSize > maxReadSize) {
+                        startPos = fileSize - maxReadSize;
+                        readSize = maxReadSize;
+                    }
+
+                    const buffer = Buffer.alloc(readSize);
+                    const { bytesRead } = await fd.read(buffer, 0, readSize, startPos);
+                    content = buffer.toString('utf-8', 0, bytesRead);
+                    
+                    // 如果是截断读取，跳过第一行（可能不完整）
+                    if (startPos > 0) {
+                        const firstNewline = content.indexOf('\n');
+                        if (firstNewline !== -1) {
+                            content = content.substring(firstNewline + 1);
+                        }
+                    }
+                    newOffset = fileSize;
+                }
+            } finally {
+                await fd.close();
+            }
+
+            res.json({
+                content: content,
+                offset: newOffset,
+                path: logPath,
+                fileSize: fileSize,
+                needFullReload: false
+            });
         } catch (error) {
             if (error.code === 'ENOENT') {
                 console.warn(`[AdminPanelRoutes API] /server-log - Log file not found at: ${logPath}`);
