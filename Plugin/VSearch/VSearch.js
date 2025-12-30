@@ -30,7 +30,10 @@ const sendResponse = (data) => {
 };
 
 const callSearchModel = async (topic, keyword) => {
-    const systemPrompt = `你是一个专业的语义搜索助手。
+    const now = new Date();
+    const currentTime = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+
+    const systemPrompt = `你是一个专业的语义搜索助手。当前系统时间: ${currentTime}。
 你的任务是根据用户提供的【检索目标主题】和具体的【检索关键词】，从互联网获取最相关、最准确的信息。
 
 行动指南：
