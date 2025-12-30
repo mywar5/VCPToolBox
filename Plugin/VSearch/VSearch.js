@@ -29,7 +29,7 @@ const sendResponse = (data) => {
     process.exit(0);
 };
 
-const callSearchModel = async (topic, keyword) => {
+const callSearchModel = async (topic, keyword, showURL = false) => {
     const now = new Date();
     const currentTime = now.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
 
@@ -40,19 +40,21 @@ const callSearchModel = async (topic, keyword) => {
 1. 意图对齐：深入理解【检索目标主题】，确保搜索结果能直接服务于该主题的研究。
 2. 深度检索：利用内置的 googleSearch 工具获取实时信息。
 3. 信息精炼：不要简单堆砌搜索结果。请从网页中提取关键事实、核心数据、专家观点或最新进展。
-4. 严格溯源：每一条重要信息必须附带来源 URL。
-5. 语言风格：专业、客观、精炼。
+4. 语言风格：专业、客观、精炼。
+${showURL ? '5. 严格溯源：每一条重要信息必须附带来源 URL。如果你使用了引用标记（如 [cite: X]），请确保在回复末尾的 [参考来源] 部分列出这些标记对应的完整 URL。' : '5. 节省Token：除非特别重要，否则不需要在正文中列出 URL 链接。'}`;
 
-输出要求：
-- 针对该关键词，提供一个结构化的总结。
-- 包含 [核心发现]、[关键数据/事实] 和 [参考来源] 三部分。`;
+    const outputRequirements = showURL
+        ? '- 包含 [核心发现]、[关键数据/事实] 和 [参考来源] 三部分。'
+        : '- 包含 [核心发现] 和 [关键数据/事实] 两部分。';
+
+    const fullSystemPrompt = `${systemPrompt}\n\n输出要求：\n- 针对该关键词，提供一个结构化的总结。\n${outputRequirements}`;
 
     const userMessage = `【检索目标主题】：${topic}\n【当前检索关键词】：${keyword}`;
 
     const payload = {
         model: MODEL,
         messages: [
-            { role: 'system', content: systemPrompt },
+            { role: 'system', content: fullSystemPrompt },
             { role: 'user', content: userMessage }
         ],
         stream: false,
@@ -74,7 +76,32 @@ const callSearchModel = async (topic, keyword) => {
             headers: { 'Authorization': `Bearer ${API_KEY}`, 'Content-Type': 'application/json' },
             timeout: 180000 // 3分钟超时
         });
-        return response.data.choices[0].message.content;
+        let content = response.data.choices[0].message.content;
+        
+        // 尝试解析 Gemini 的 grounding_metadata (引证来源)
+        if (showURL) {
+            try {
+                const metadata = response.data.choices[0].message.grounding_metadata || response.data.choices[0].grounding_metadata;
+                if (metadata && metadata.grounding_chunks) {
+                    const citations = metadata.grounding_chunks
+                        .map((chunk, index) => {
+                            if (chunk.web) {
+                                return `[cite: ${index + 1}] ${chunk.web.title}: ${chunk.web.uri}`;
+                            }
+                            return null;
+                        })
+                        .filter(c => c !== null);
+                    
+                    if (citations.length > 0) {
+                        content += `\n\n**API 自动引证来源:**\n${citations.join('\n')}`;
+                    }
+                }
+            } catch (metaError) {
+                log(`解析引证元数据时出错: ${metaError.message}`);
+            }
+        }
+
+        return content;
     } catch (error) {
         log(`关键词 "${keyword}" 搜索失败: ${error.message}`);
         return `[搜索失败] 关键词: ${keyword}。错误原因: ${error.message}`;
@@ -83,7 +110,8 @@ const callSearchModel = async (topic, keyword) => {
 
 // --- 3. 主逻辑 ---
 async function main(request) {
-    const { SearchTopic, Keywords } = request;
+    const { SearchTopic, Keywords, ShowURL } = request;
+    const showURL = ShowURL === true || ShowURL === 'true';
 
     if (!SearchTopic || !Keywords) {
         return sendResponse({ status: "error", error: "缺少必需参数: SearchTopic 或 Keywords。" });
@@ -104,7 +132,7 @@ async function main(request) {
     // 分批执行并发搜索
     for (let i = 0; i < keywordList.length; i += CONCURRENCY) {
         const chunk = keywordList.slice(i, i + CONCURRENCY);
-        const promises = chunk.map(kw => callSearchModel(SearchTopic, kw));
+        const promises = chunk.map(kw => callSearchModel(SearchTopic, kw, showURL));
         const results = await Promise.all(promises);
         
         results.forEach((res, idx) => {
