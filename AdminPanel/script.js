@@ -15,6 +15,14 @@ import { initializeVCPForum } from './js/forum.js';
 import { initializeScheduleManager } from './js/schedule-manager.js';
 
 document.addEventListener('DOMContentLoaded', () => {
+    // 1. 立即检查登录状态 (检查是否存在 admin_auth Cookie)
+    const hasAuthCookie = document.cookie.split(';').some(item => item.trim().startsWith('admin_auth='));
+    if (!hasAuthCookie) {
+        console.warn('No admin_auth cookie found, redirecting to login...');
+        window.location.href = '/AdminPanel/login.html';
+        return;
+    }
+
     const pluginNavList = document.getElementById('plugin-nav')?.querySelector('ul');
     const baseConfigForm = document.getElementById('base-config-form');
     const restartServerButton = document.getElementById('restart-server-button');
