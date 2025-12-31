@@ -109,7 +109,7 @@ async function handleGenerateMusicSunoApiCall(args) {
         prompt: args.prompt, // Will be undefined if not provided, API should handle
         tags: args.tags,     // Will be undefined if not provided
         title: args.title,   // Will be undefined if not provided
-        mv: args.mv || "chirp-v4",
+        mv: args.mv || "chirp-v4-5",
         make_instrumental: args.make_instrumental || false,
     };
 
