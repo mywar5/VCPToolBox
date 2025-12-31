@@ -30,6 +30,23 @@ export function showMessage(message, type = 'info', duration = 3500) {
 }
 
 /**
+ * 检查当前认证状态（通过后端验证）
+ * @returns {Promise<boolean>} - 是否已认证
+ */
+export async function checkAuthStatus() {
+    try {
+        const response = await fetch('/admin_api/check-auth', {
+            method: 'GET',
+            credentials: 'same-origin'
+        });
+        return response.ok;
+    } catch (error) {
+        console.error('Auth check failed:', error);
+        return false;
+    }
+}
+
+/**
  * 封装的 fetch 请求函数。
  * @param {string} url - 请求的 URL
  * @param {object} [options={}] - fetch 的配置选项
@@ -37,37 +54,25 @@ export function showMessage(message, type = 'info', duration = 3500) {
  * @returns {Promise<any>} - 返回 Promise，解析为 JSON 或文本
  */
 export async function apiFetch(url, options = {}, showLoader = true) {
-    // 1. 预检：如果不是登录请求且没有认证 Cookie，直接拦截并跳转
-    const isLoginRequest = url.includes('/verify-login');
-    const hasAuthCookie = document.cookie.split(';').some(item => item.trim().startsWith('admin_auth='));
-    
-    if (!isLoginRequest && !hasAuthCookie) {
-        console.warn('Blocking API fetch due to missing auth cookie:', url);
-        window.location.href = '/AdminPanel/login.html';
-        return new Promise(() => {}); // 返回一个永远不会 resolve 的 promise，中断后续逻辑
-    }
-
     if (showLoader) showLoading(true);
     try {
         const defaultHeaders = {
             'Content-Type': 'application/json',
         };
         options.headers = { ...defaultHeaders, ...options.headers };
-        
-        // 确保携带凭据（Cookie）
-        if (!options.credentials) {
-            options.credentials = 'same-origin';
-        }
+        options.credentials = options.credentials || 'same-origin';
 
         const response = await fetch(url, options);
         if (!response.ok) {
             if (response.status === 401) {
-                // 2. 响应检查：如果收到 401，说明认证失效
-                console.warn('401 Unauthorized detected, redirecting to login...');
-                document.cookie = 'admin_auth=; Path=/; Max-Age=0;';
-                window.location.href = '/AdminPanel/login.html';
-                return new Promise(() => {});
+                // 认证失效，跳转登录页（防止重复跳转）
+                if (!window.location.pathname.includes('login.html')) {
+                    console.warn('401 Unauthorized, redirecting to login...');
+                    window.location.href = '/AdminPanel/login.html';
+                }
+                return new Promise(() => {}); // 中断后续逻辑
             }
+            
             let errorData = { error: `HTTP error ${response.status}`, details: response.statusText };
             try {
                 const jsonError = await response.json();

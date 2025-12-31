@@ -1,5 +1,5 @@
 // AdminPanel/script.js
-import { apiFetch, showMessage } from './js/utils.js';
+import { apiFetch, showMessage, checkAuthStatus } from './js/utils.js';
 import { parseEnvToList, buildEnvString, createFormGroup, createCommentOrEmptyElement } from './js/config.js';
 import { loadPluginList, loadPluginConfig } from './js/plugins.js';
 import { initializeDashboard, stopDashboardUpdates } from './js/dashboard.js';
@@ -14,11 +14,11 @@ import { initializeThinkingChainsEditor } from './js/thinking-chains-editor.js';
 import { initializeVCPForum } from './js/forum.js';
 import { initializeScheduleManager } from './js/schedule-manager.js';
 
-document.addEventListener('DOMContentLoaded', () => {
-    // 1. 立即检查登录状态 (检查是否存在 admin_auth Cookie)
-    const hasAuthCookie = document.cookie.split(';').some(item => item.trim().startsWith('admin_auth='));
-    if (!hasAuthCookie) {
-        console.warn('No admin_auth cookie found, redirecting to login...');
+document.addEventListener('DOMContentLoaded', async () => {
+    // 1. 通过后端验证登录状态（替代前端 Cookie 检查，解决 HttpOnly 无法读取问题）
+    const isAuthenticated = await checkAuthStatus();
+    if (!isAuthenticated) {
+        console.warn('Not authenticated, redirecting to login...');
         window.location.href = '/AdminPanel/login.html';
         return;
     }

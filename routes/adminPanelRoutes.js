@@ -1855,6 +1855,12 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         res.setHeader('Set-Cookie', 'admin_auth=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
         res.status(200).json({ status: 'success', message: 'Logged out' });
     });
+
+    // 新增：检查认证状态端点
+    adminApiRouter.get('/check-auth', (req, res) => {
+        // 能到达这里说明已通过 adminAuth 中间件验证
+        res.status(200).json({ authenticated: true });
+    });
     
     return adminApiRouter;
 };
