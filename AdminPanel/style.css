@@ -126,6 +126,12 @@ html[data-theme='light'] {
     --neptune-color: #3c4043;
 }
 
+html, body {
+    overflow-x: hidden;
+    width: 100%;
+    position: relative;
+}
+
 body {
     font-family: 'Inter', 'Segoe UI', 'Roboto', system-ui, sans-serif;
     margin: 0;
@@ -145,8 +151,8 @@ body {
     position: fixed;
     top: 0;
     left: 0;
-    width: 100%;
-    height: 100%;
+    width: 100vw;
+    height: 100vh;
     z-index: -1;
     overflow: hidden;
     pointer-events: none;
@@ -2652,4 +2658,370 @@ html[data-theme='light'] .delete-theme-btn {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* --- 移动端响应式适配 --- */
+.mobile-menu-toggle {
+   display: none;
+   background: none;
+   border: none;
+   color: var(--primary-text);
+   cursor: pointer;
+   padding: 8px;
+   margin-right: 10px;
+}
+
+.sidebar-overlay {
+   position: fixed;
+   top: 0;
+   left: 0;
+   width: 100%;
+   height: 100%;
+   background: rgba(0, 0, 0, 0.5);
+   backdrop-filter: blur(4px);
+   z-index: 1001;
+   display: none;
+   opacity: 0;
+   transition: opacity 0.3s ease;
+}
+
+.sidebar-overlay.active {
+   display: block;
+   opacity: 1;
+}
+
+@media (max-width: 768px) {
+    body {
+        padding-top: 56px;
+        overflow-x: hidden;
+    }
+
+   .top-bar {
+       height: 56px;
+       padding: 0 15px;
+   }
+
+   .mobile-menu-toggle {
+       display: flex;
+       align-items: center;
+       justify-content: center;
+   }
+
+   .brand-icon {
+       font-size: 24px !important;
+       padding: 4px;
+   }
+
+   .server-title {
+       font-size: 1.1em;
+   }
+
+   .header-actions {
+       gap: 8px;
+   }
+
+   .restart-button, .theme-button {
+       padding: 6px 10px;
+       font-size: 0.8em;
+   }
+
+   .restart-button span, .theme-button span {
+       font-size: 18px !important;
+   }
+
+   .container {
+       height: calc(100vh - 56px);
+   }
+
+   .sidebar {
+       position: fixed;
+       left: -280px;
+       top: 56px;
+       height: calc(100vh - 56px);
+       z-index: 1002;
+       width: 280px;
+       transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+       background-color: var(--tertiary-bg);
+   }
+
+   .sidebar.mobile-active {
+       transform: translateX(280px);
+   }
+
+   .content {
+       padding: 20px 15px;
+       width: 100%;
+       overflow-x: hidden;
+       box-sizing: border-box;
+   }
+
+   .config-section h2 {
+       font-size: 1.5em;
+       margin-bottom: 20px;
+   }
+
+   .dashboard-grid {
+       grid-template-columns: 1fr;
+       gap: 15px;
+   }
+
+   .status-card {
+       padding: 20px;
+   }
+
+   .vcp-animation-container {
+       height: 180px;
+   }
+
+   .vcp-logo {
+       max-width: 90%;
+   }
+
+   .weather-current {
+       flex-direction: column;
+       align-items: flex-start;
+       gap: 10px;
+   }
+
+   .current-details {
+       padding-left: 0;
+       border-left: none;
+       border-top: 1px solid var(--border-color);
+       padding-top: 10px;
+       width: 100%;
+       flex-direction: row;
+       flex-wrap: wrap;
+   }
+
+   .weather-forecast {
+       grid-template-columns: repeat(2, 1fr);
+   }
+
+   /* 表单适配 */
+   .form-group {
+       padding: 15px;
+   }
+
+   .form-actions {
+       flex-direction: column;
+   }
+
+   .form-actions button {
+       width: 100%;
+   }
+
+   /* 日记管理器适配 */
+   .daily-notes-manager {
+       flex-direction: column;
+       height: auto;
+   }
+
+   .notes-sidebar {
+       width: 100%;
+       height: auto;
+       max-height: 300px;
+       padding: 15px;
+   }
+
+   #notes-folder-list {
+       display: flex;
+       flex-wrap: wrap;
+       gap: 8px;
+   }
+
+   #notes-folder-list li {
+       flex: 1 1 calc(50% - 8px);
+       min-width: 120px;
+       margin-bottom: 0;
+       text-align: center;
+       justify-content: center;
+       border: 1px solid var(--border-color);
+   }
+
+   /* RAG Tags 阈值控制适配 */
+   .threshold-controls {
+       display: flex;
+       flex-direction: column;
+       align-items: flex-start;
+       gap: 8px;
+   }
+
+   .threshold-controls label {
+       order: -1;
+       margin-left: 0;
+       font-weight: 600;
+   }
+
+   .threshold-controls input[type="checkbox"] {
+       margin-left: 0;
+   }
+
+   .threshold-controls input[type="range"] {
+       width: 100%;
+       margin: 5px 0;
+   }
+
+   .notes-toolbar {
+       flex-direction: column;
+       align-items: stretch;
+   }
+
+   #notes-list-view {
+       grid-template-columns: 1fr;
+   }
+
+   /* Agent 管理器适配 */
+   .agent-manager-container {
+       grid-template-columns: 1fr;
+   }
+
+   .agent-map-controls {
+       flex-direction: column;
+       align-items: stretch;
+   }
+
+   .agent-map-controls button {
+       width: 100%;
+   }
+
+   .agent-map-entry {
+       grid-template-columns: 1fr;
+   }
+
+   /* 论坛适配 */
+   .forum-controls {
+       flex-direction: column;
+       align-items: stretch;
+   }
+
+   #forum-search-input {
+       max-width: none;
+   }
+
+   .forum-posts-list th:nth-child(3),
+   .forum-posts-list td:nth-child(3),
+   .forum-posts-list th:nth-child(4),
+   .forum-posts-list td:nth-child(4) {
+       display: none; /* 隐藏回复数和最后回复时间 */
+   }
+
+   /* 日程管理适配 */
+   .schedule-manager-container {
+       grid-template-columns: 1fr;
+   }
+
+   /* 日志查看器适配 */
+   .log-header {
+       flex-direction: column;
+       align-items: stretch;
+   }
+
+   #server-log-filter {
+       width: 100%;
+   }
+
+   /* 隐藏可能导致溢出的太阳系背景元素（可选，如果仍然溢出） */
+   .solar-system-bg {
+       display: none;
+   }
+
+   /* 修复文本换行和溢出 */
+   * {
+       box-sizing: border-box;
+   }
+
+   p, span, h1, h2, h3, h4, h5, h6, li, td, div, label {
+       overflow-wrap: break-word;
+       word-wrap: break-word;
+       word-break: break-word;
+       max-width: 100%;
+   }
+
+   /* 强制表格在移动端可滚动 */
+   .forum-posts-list {
+       display: block;
+       width: 100%;
+       overflow-x: auto;
+       -webkit-overflow-scrolling: touch;
+   }
+
+   /* 修复代码块溢出 */
+   pre, code {
+       white-space: pre-wrap !important;
+       word-break: break-all !important;
+   }
+
+   /* 确保所有输入框不超出屏幕 */
+   input, textarea, select {
+       max-width: 100%;
+   }
+    /* Agent 助手配置适配 */
+    .aa-agent-cards-container {
+        grid-template-columns: 1fr;
+    }
+
+    .aa-agent-card {
+        padding: 15px;
+        gap: 12px;
+    }
+
+    .aa-agent-card-header {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+
+    .aa-agent-name-input, .aa-agent-subtitle, .aa-agent-delete-btn {
+        grid-column: 1 / -1 !important;
+        grid-row: auto !important;
+    }
+
+    .aa-row {
+        grid-template-columns: 1fr !important;
+    }
+
+    .aa-global-grid {
+        display: contents;
+    }
+
+    .aa-global-item, .aa-global-item-full {
+        padding: 0;
+        margin-bottom: 15px;
+    }
+
+    .aa-agents-header {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 15px;
+    }
+
+    .aa-agents-actions, .aa-existing-helper {
+        display: contents;
+    }
+
+    .aa-agents-header h3 {
+        order: 1;
+        margin: 0;
+    }
+
+    .aa-agents-header label[for="aa-existing-agent-select"] {
+        order: 2;
+        font-weight: 600;
+        margin-top: 5px;
+    }
+
+    .aa-agents-header select#aa-existing-agent-select {
+        order: 3;
+        width: 100%;
+    }
+
+    .aa-agents-header button#aa-add-from-existing-button {
+        order: 4;
+        width: 100%;
+    }
+
+    .aa-agents-header button#aa-add-custom-agent-button {
+        order: 5;
+        width: 100%;
+    }
 }

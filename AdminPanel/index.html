@@ -323,6 +323,9 @@
    </div>
     <header class="top-bar">
         <div class="top-bar-content">
+            <button id="mobile-menu-toggle" class="mobile-menu-toggle">
+                <span class="material-symbols-outlined">menu</span>
+            </button>
             <div class="brand">
                 <span class="material-symbols-outlined brand-icon">terminal</span>
                 <span class="server-title">VCPToolBox</span>
@@ -920,6 +923,37 @@
                 animate();
             }
         });
+
+        // 移动端菜单切换逻辑
+        const mobileMenuToggle = document.getElementById('mobile-menu-toggle');
+        const sidebar = document.querySelector('.sidebar');
+        const contentOverlay = document.createElement('div');
+        contentOverlay.className = 'sidebar-overlay';
+        document.body.appendChild(contentOverlay);
+
+        if (mobileMenuToggle && sidebar) {
+            mobileMenuToggle.addEventListener('click', () => {
+                sidebar.classList.toggle('mobile-active');
+                contentOverlay.classList.toggle('active');
+            });
+
+            contentOverlay.addEventListener('click', () => {
+                sidebar.classList.remove('mobile-active');
+                contentOverlay.classList.remove('active');
+            });
+
+            // 点击导航链接后自动关闭侧边栏
+            const navLinks = sidebar.querySelectorAll('nav a');
+            navLinks.forEach(link => {
+                link.addEventListener('click', () => {
+                    if (window.innerWidth <= 768) {
+                        sidebar.classList.remove('mobile-active');
+                        contentOverlay.classList.remove('active');
+                    }
+                });
+            });
+        }
+
         // 主题切换逻辑保持不变
         const themeToggleButton = document.getElementById('theme-toggle-button');
         const currentTheme = localStorage.getItem('theme') ? localStorage.getItem('theme') : null;
