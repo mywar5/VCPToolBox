@@ -19,15 +19,21 @@ function extractReadableText(pluginResult) {
         return pluginResult;
     }
     if (typeof pluginResult === 'object') {
-        // 1. 优先处理多模态 content 数组
-        if (Array.isArray(pluginResult.content)) {
-            const textParts = pluginResult.content
-                .filter(part => part.type === 'text' && part.text)
+        // 辅助函数：从数组中提取文本内容
+        const extractFromContentArray = (arr) => {
+            if (!Array.isArray(arr)) return null;
+            const textParts = arr
+                .filter(part => part && part.type === 'text' && typeof part.text === 'string')
                 .map(part => part.text);
-            if (textParts.length > 0) {
-                return textParts.join('\n');
-            }
-        }
+            return textParts.length > 0 ? textParts.join('\n') : null;
+        };
+
+        // 1. 优先处理多模态 content 或 result 数组 (AgentAssistant 使用 result 数组)
+        const fromContent = extractFromContentArray(pluginResult.content);
+        if (fromContent) return fromContent;
+
+        const fromResultArray = extractFromContentArray(pluginResult.result);
+        if (fromResultArray) return fromResultArray;
 
         // 2. 其次按优先级查找常见的纯文本结果字段
         if (typeof pluginResult.result === 'string') return pluginResult.result;
@@ -56,8 +62,26 @@ function extractReadableText(pluginResult) {
 
         if (typeof pluginResult.content === 'string') return pluginResult.content;
 
-        // 4. 最后的备用方案：返回一个单行的JSON字符串
-        return JSON.stringify(pluginResult);
+        // 4. 最后的备用方案：返回一个清理过的 JSON 字符串，排除 base64 等大数据
+        try {
+            const cleanResult = JSON.parse(JSON.stringify(pluginResult));
+            const removeLargeData = (obj) => {
+                for (const key in obj) {
+                    if (typeof obj[key] === 'string') {
+                        // 如果字符串过长或包含 base64 特征，则截断或移除
+                        if (obj[key].length > 1000 || obj[key].includes(';base64,')) {
+                            obj[key] = `[数据过大或包含Base64，已忽略] (Length: ${obj[key].length})`;
+                        }
+                    } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        removeLargeData(obj[key]);
+                    }
+                }
+            };
+            removeLargeData(cleanResult);
+            return JSON.stringify(cleanResult);
+        } catch (e) {
+            return JSON.stringify(pluginResult).substring(0, 500) + '... [结果过长已截断]';
+        }
     }
     return `插件返回了未知类型的数据。`;
 }
