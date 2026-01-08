@@ -44,10 +44,15 @@ function normalizeForIgnore(text) {
  * @param {Object} options.scanSwitches - Scan switches { system: bool, assistant: bool, user: bool }.
  * @returns {Array<Object>} - Array of resulting messages.
  */
-function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, autoClear = true } = {}) {
+function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true } } = {}) {
+    // Check if this message's role should be scanned
+    if (!scanSwitches[message.role]) {
+        return [message];
+    }
+
     // Handle array content (multi-modal)
     if (Array.isArray(message.content)) {
-        return processArrayMessage(message, { ignoreList, switches, scanSwitches, autoClear });
+        return processArrayMessage(message, { ignoreList, switches, scanSwitches });
     }
 
     if (typeof message.content !== 'string') {
@@ -57,19 +62,11 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
     let text = message.content;
 
     // Step 0: Remove tags of disabled roles from the entire text before any other processing
-    // This happens regardless of scanSwitches, as it's a global cleanup for disabled roles.
-    if (autoClear) {
-        for (const key in TAGS) {
-            const tagConfig = TAGS[key];
-            if (!switches[tagConfig.ROLE]) {
-                text = text.replaceAll(tagConfig.START, "").replaceAll(tagConfig.END, "");
-            }
+    for (const key in TAGS) {
+        const tagConfig = TAGS[key];
+        if (!switches[tagConfig.ROLE]) {
+            text = text.replaceAll(tagConfig.START, "").replaceAll(tagConfig.END, "");
         }
-    }
-
-    // Check if this message's role should be scanned for splitting
-    if (!scanSwitches[message.role]) {
-        return [{ ...message, content: text }];
     }
 
     const baseRole = message.role;
