@@ -31,16 +31,17 @@ async function fetchWithRetry(
   for (let i = 0; i < retries; i++) {
     try {
       const response = await fetch(url, options);
-      if (response.status === 500 || response.status === 503) {
+      if (response.status === 500 || response.status === 503 || response.status === 429) {
+        const currentDelay = delay * (i + 1);
         if (debugMode) {
           console.warn(
-            `[Fetch Retry] Received status ${response.status}. Retrying in ${delay}ms... (${i + 1}/${retries})`,
+            `[Fetch Retry] Received status ${response.status}. Retrying in ${currentDelay}ms... (${i + 1}/${retries})`,
           );
         }
         if (onRetry) {
           await onRetry(i + 1, { status: response.status, message: response.statusText });
         }
-        await new Promise(resolve => setTimeout(resolve, delay * (i + 1))); // Increase delay for subsequent retries
+        await new Promise(resolve => setTimeout(resolve, currentDelay)); // Increase delay for subsequent retries
         continue; // Try again
       }
       return response; // Success or non-retriable error
