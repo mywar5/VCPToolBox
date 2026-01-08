@@ -112,7 +112,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 <div class="form-group" style="grid-column: 1 / -1;">
                     <label>注入内容</label>
-                    <textarea class="rule-content-text">${rule.content.content || ''}</textarea>
+                    <textarea class="rule-content-text" style="${rule.ui?.textareaWidth ? `width: ${rule.ui.textareaWidth};` : ''} ${rule.ui?.textareaHeight ? `height: ${rule.ui.textareaHeight};` : ''}">${rule.content.content || ''}</textarea>
                 </div>
             </div>
         `;
@@ -201,6 +201,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 content: {
                     role: card.querySelector('.rule-content-role').value,
                     content: card.querySelector('.rule-content-text').value
+                },
+                ui: {
+                    textareaWidth: card.querySelector('.rule-content-text').style.width,
+                    textareaHeight: card.querySelector('.rule-content-text').style.height
                 }
             };
             if (rule.type === 'relative') {

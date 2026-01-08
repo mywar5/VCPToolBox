@@ -2,6 +2,7 @@
 const messageProcessor = require('./messageProcessor.js');
 const vcpInfoHandler = require('../vcpInfoHandler.js');
 const contextManager = require('./contextManager.js');
+const roleDivider = require('./roleDivider.js'); // 新增：引入角色分割模块
 const fs = require('fs').promises;
 const path = require('path');
 const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
@@ -186,6 +187,12 @@ class ChatCompletionHandler {
       apiRetries,
       apiRetryDelay,
       RAGMemoRefresh,
+      enableRoleDivider, // 新增
+      enableRoleDividerInLoop, // 新增
+      roleDividerIgnoreList, // 新增
+      roleDividerSwitches, // 新增
+      roleDividerScanSwitches, // 新增
+      roleDividerRemoveDisabledTags, // 新增
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -244,6 +251,21 @@ class ChatCompletionHandler {
       }
 
       await writeDebugLog('LogInput', originalBody);
+
+      // --- 角色分割处理 (Role Divider) - 初始阶段 ---
+      // 移动到最前端，确保拆分出的楼层能享受后续所有解析功能
+      if (enableRoleDivider) {
+          if (DEBUG_MODE) console.log('[Server] Applying Role Divider processing (Initial Stage)...');
+          // skipCount: 1 to exclude the initial SystemPrompt from splitting
+          originalBody.messages = roleDivider.process(originalBody.messages, {
+              ignoreList: roleDividerIgnoreList,
+              switches: roleDividerSwitches,
+              scanSwitches: roleDividerScanSwitches,
+              removeDisabledTags: roleDividerRemoveDisabledTags,
+              skipCount: 1
+          });
+          if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
+      }
 
       let shouldProcessMedia = true;
       if (originalBody.messages && Array.isArray(originalBody.messages)) {
@@ -356,6 +378,7 @@ class ChatCompletionHandler {
       if (DEBUG_MODE) await writeDebugLog('LogAfterPreprocessors', processedMessages);
 
       // 经过改造后，processedMessages 已经是最终版本，无需再调用 replaceOtherVariables
+      
       originalBody.messages = processedMessages;
       await writeDebugLog('LogOutputAfterProcessing', originalBody);
 
@@ -696,7 +719,18 @@ class ChatCompletionHandler {
 
         // --- VCP Loop ---
         while (recursionDepth < maxRecursion) {
-          currentMessagesForLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+          // Apply Role Divider to the AI's response before adding to history
+          let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+          if (enableRoleDivider && enableRoleDividerInLoop) {
+              assistantMessages = roleDivider.process(assistantMessages, {
+                  ignoreList: roleDividerIgnoreList,
+                  switches: roleDividerSwitches,
+                  scanSwitches: roleDividerScanSwitches,
+                  removeDisabledTags: roleDividerRemoveDisabledTags,
+                  skipCount: 0
+              });
+          }
+          currentMessagesForLoop.push(...assistantMessages);
 
           const toolRequestStartMarker = '<<<[TOOL_REQUEST]>>>';
           const toolRequestEndMarker = '<<<[END_TOOL_REQUEST]>>>';
@@ -1443,7 +1477,18 @@ class ChatCompletionHandler {
             }
 
             // Add the AI's full response (that contained the tool requests) to the messages for the next AI call
-            currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+            // Apply Role Divider before adding to history
+            let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+            if (enableRoleDivider && enableRoleDividerInLoop) {
+                assistantMessages = roleDivider.process(assistantMessages, {
+                    ignoreList: roleDividerIgnoreList,
+                    switches: roleDividerSwitches,
+                    scanSwitches: roleDividerScanSwitches,
+                    removeDisabledTags: roleDividerRemoveDisabledTags,
+                    skipCount: 0
+                });
+            }
+            currentMessagesForNonStreamLoop.push(...assistantMessages);
 
             // Process normal (non-archery) calls and wait for their results to send back to the AI
             const toolExecutionPromises = normalCalls.map(async toolCall => {

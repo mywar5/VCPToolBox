@@ -73,6 +73,22 @@ const DEBUG_MODE = (process.env.DebugMode || "False").toLowerCase() === "true";
 const VCPToolCode = (process.env.VCPToolCode || "false").toLowerCase() === "true"; // 新增：读取VCP工具调用验证码开关
 const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true"; // 读取 ShowVCP 环境变量
 const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：RAG日记刷新开关
+const ENABLE_ROLE_DIVIDER = (process.env.EnableRoleDivider || "false").toLowerCase() === "true"; // 新增：角色分割开关
+const ENABLE_ROLE_DIVIDER_IN_LOOP = (process.env.EnableRoleDividerInLoop || "false").toLowerCase() === "true"; // 新增：循环栈角色分割开关
+const ROLE_DIVIDER_SYSTEM = (process.env.RoleDividerSystem || "true").toLowerCase() === "true"; // 新增：System角色分割开关
+const ROLE_DIVIDER_ASSISTANT = (process.env.RoleDividerAssistant || "true").toLowerCase() === "true"; // 新增：Assistant角色分割开关
+const ROLE_DIVIDER_USER = (process.env.RoleDividerUser || "true").toLowerCase() === "true"; // 新增：User角色分割开关
+const ROLE_DIVIDER_SCAN_SYSTEM = (process.env.RoleDividerScanSystem || "true").toLowerCase() === "true"; // 新增：System角色扫描开关
+const ROLE_DIVIDER_SCAN_ASSISTANT = (process.env.RoleDividerScanAssistant || "true").toLowerCase() === "true"; // 新增：Assistant角色扫描开关
+const ROLE_DIVIDER_SCAN_USER = (process.env.RoleDividerScanUser || "true").toLowerCase() === "true"; // 新增：User角色扫描开关
+const ROLE_DIVIDER_REMOVE_DISABLED_TAGS = (process.env.RoleDividerRemoveDisabledTags || "true").toLowerCase() === "true"; // 新增：禁用标签清除开关
+
+let ROLE_DIVIDER_IGNORE_LIST = [];
+try {
+    ROLE_DIVIDER_IGNORE_LIST = JSON.parse(process.env.RoleDividerIgnoreList || "[]");
+} catch (e) {
+    console.error("Failed to parse RoleDividerIgnoreList:", e);
+}
 
 // 新增：模型重定向功能
 const ModelRedirectHandler = require('./modelRedirectHandler.js');
@@ -692,6 +708,20 @@ const chatCompletionHandler = new ChatCompletionHandler({
     SHOW_VCP_OUTPUT,
     VCPToolCode, // 新增：传递VCP工具调用验证码开关
     RAGMemoRefresh: RAG_MEMO_REFRESH, // 新增：传递RAG日记刷新开关
+    enableRoleDivider: ENABLE_ROLE_DIVIDER, // 新增：传递角色分割开关
+    enableRoleDividerInLoop: ENABLE_ROLE_DIVIDER_IN_LOOP, // 新增：传递循环栈角色分割开关
+    roleDividerIgnoreList: ROLE_DIVIDER_IGNORE_LIST, // 新增：传递角色分割忽略列表
+    roleDividerSwitches: {
+        system: ROLE_DIVIDER_SYSTEM,
+        assistant: ROLE_DIVIDER_ASSISTANT,
+        user: ROLE_DIVIDER_USER
+    },
+    roleDividerScanSwitches: {
+        system: ROLE_DIVIDER_SCAN_SYSTEM,
+        assistant: ROLE_DIVIDER_SCAN_ASSISTANT,
+        user: ROLE_DIVIDER_SCAN_USER
+    },
+    roleDividerRemoveDisabledTags: ROLE_DIVIDER_REMOVE_DISABLED_TAGS,
     maxVCPLoopStream: parseInt(process.env.MaxVCPLoopStream),
     maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
     apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数
