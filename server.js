@@ -75,6 +75,7 @@ const SHOW_VCP_OUTPUT = (process.env.ShowVCP || "False").toLowerCase() === "true
 const RAG_MEMO_REFRESH = (process.env.RAGMemoRefresh || "false").toLowerCase() === "true"; // 新增：RAG日记刷新开关
 const ENABLE_ROLE_DIVIDER = (process.env.EnableRoleDivider || "false").toLowerCase() === "true"; // 新增：角色分割开关
 const ENABLE_ROLE_DIVIDER_IN_LOOP = (process.env.EnableRoleDividerInLoop || "false").toLowerCase() === "true"; // 新增：循环栈角色分割开关
+const ENABLE_ROLE_DIVIDER_AUTO_CLEAR = (process.env.EnableRoleDividerAutoClear || "true").toLowerCase() === "true"; // 新增：自动清除开关
 const ROLE_DIVIDER_SYSTEM = (process.env.RoleDividerSystem || "true").toLowerCase() === "true"; // 新增：System角色分割开关
 const ROLE_DIVIDER_ASSISTANT = (process.env.RoleDividerAssistant || "true").toLowerCase() === "true"; // 新增：Assistant角色分割开关
 const ROLE_DIVIDER_USER = (process.env.RoleDividerUser || "true").toLowerCase() === "true"; // 新增：User角色分割开关
@@ -709,6 +710,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
     RAGMemoRefresh: RAG_MEMO_REFRESH, // 新增：传递RAG日记刷新开关
     enableRoleDivider: ENABLE_ROLE_DIVIDER, // 新增：传递角色分割开关
     enableRoleDividerInLoop: ENABLE_ROLE_DIVIDER_IN_LOOP, // 新增：传递循环栈角色分割开关
+    enableRoleDividerAutoClear: ENABLE_ROLE_DIVIDER_AUTO_CLEAR, // 新增：传递自动清除开关
     roleDividerIgnoreList: ROLE_DIVIDER_IGNORE_LIST, // 新增：传递角色分割忽略列表
     roleDividerSwitches: {
         system: ROLE_DIVIDER_SYSTEM,

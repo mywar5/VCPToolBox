@@ -189,6 +189,7 @@ class ChatCompletionHandler {
       RAGMemoRefresh,
       enableRoleDivider, // 新增
       enableRoleDividerInLoop, // 新增
+      enableRoleDividerAutoClear, // 新增
       roleDividerIgnoreList, // 新增
       roleDividerSwitches, // 新增
       roleDividerScanSwitches, // 新增
@@ -260,6 +261,7 @@ class ChatCompletionHandler {
               ignoreList: roleDividerIgnoreList,
               switches: roleDividerSwitches,
               scanSwitches: roleDividerScanSwitches,
+              autoClear: enableRoleDividerAutoClear,
               skipCount: 1
           });
           if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
@@ -724,6 +726,7 @@ class ChatCompletionHandler {
                   ignoreList: roleDividerIgnoreList,
                   switches: roleDividerSwitches,
                   scanSwitches: roleDividerScanSwitches,
+                  autoClear: enableRoleDividerAutoClear,
                   skipCount: 0
               });
           }
@@ -1481,6 +1484,7 @@ class ChatCompletionHandler {
                     ignoreList: roleDividerIgnoreList,
                     switches: roleDividerSwitches,
                     scanSwitches: roleDividerScanSwitches,
+                    autoClear: enableRoleDividerAutoClear,
                     skipCount: 0
                 });
             }
