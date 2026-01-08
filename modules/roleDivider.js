@@ -92,6 +92,32 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 
     const normalizedIgnoreList = ignoreList.map(normalizeForIgnore);
 
+    // Pre-scan for all valid (non-protected) tags to support refined robustness logic
+    const allValidTags = [];
+    for (const key in TAGS) {
+        const tagConfig = TAGS[key];
+        if (!switches[tagConfig.ROLE]) continue;
+
+        // Find all START tags
+        let sIdx = 0;
+        while ((sIdx = text.indexOf(tagConfig.START, sIdx)) !== -1) {
+            if (!protectedBlocks.some(b => sIdx >= b.start && sIdx < b.end)) {
+                allValidTags.push({ type: 'START', index: sIdx, config: tagConfig });
+            }
+            sIdx += tagConfig.START.length;
+        }
+
+        // Find all END tags
+        let eIdx = 0;
+        while ((eIdx = text.indexOf(tagConfig.END, eIdx)) !== -1) {
+            if (!protectedBlocks.some(b => eIdx >= b.start && eIdx < b.end)) {
+                allValidTags.push({ type: 'END', index: eIdx, config: tagConfig });
+            }
+            eIdx += tagConfig.END.length;
+        }
+    }
+    allValidTags.sort((a, b) => a.index - b.index);
+
     while (cursor < text.length) {
         // Check if current cursor is inside a protected block
         const currentBlock = protectedBlocks.find(b => cursor >= b.start && cursor < b.end);
@@ -157,20 +183,25 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 
         if (isEndTag) {
             // Robustness Case 1: END tag found without a preceding START tag in this scan
-            // Logic: Treat everything before this END tag as a split block for this role
-            const innerContent = currentTextBuffer;
-            currentTextBuffer = ""; // Clear buffer as it's now inner content
+            // Refined Logic: Only trigger if NO START tags exist before this index in the entire message
+            const hasStartBefore = allValidTags.some(t => t.type === 'START' && t.index < firstTagIndex);
+            
+            if (!hasStartBefore) {
+                const innerContent = currentTextBuffer;
+                currentTextBuffer = "";
 
-            // Check ignore list (though unlikely for an orphan END tag, we stay consistent)
-            const normalizedInner = normalizeForIgnore(innerContent);
-            if (normalizedInner.length > 0 && !ignoreList.map(normalizeForIgnore).includes(normalizedInner)) {
-                // Push inner content as new role message
-                resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                const normalizedInner = normalizeForIgnore(innerContent);
+                if (normalizedInner.length > 0 && !ignoreList.map(normalizeForIgnore).includes(normalizedInner)) {
+                    resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                } else {
+                    currentTextBuffer = innerContent + firstTag.END;
+                }
+                cursor = firstTagIndex + firstTag.END.length;
             } else {
-                // If ignored or empty, keep as is (but here we just don't split)
-                currentTextBuffer = innerContent + firstTag.END;
+                // Treat as normal text if there was a START tag somewhere before (even if already processed)
+                currentTextBuffer += firstTag.END;
+                cursor = firstTagIndex + firstTag.END.length;
             }
-            cursor = firstTagIndex + firstTag.END.length;
         } else {
             // Normal Case: START tag found
             const contentStartIndex = firstTagIndex + firstTag.START.length;
@@ -184,21 +215,27 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 
             if (validEndTagIndex === -1) {
                 // Robustness Case 2: START tag found without a following END tag
-                // Logic: Treat everything AFTER this START tag as a split block for this role
-                const innerContent = text.substring(contentStartIndex);
-                
-                // 1. Push accumulated buffer as base role message
-                if (currentTextBuffer.trim().length > 0) {
-                    resultMessages.push({ role: baseRole, content: currentTextBuffer });
-                }
-                currentTextBuffer = "";
+                // Refined Logic: Only trigger if NO END tags exist after this index in the entire message
+                const hasEndAfter = allValidTags.some(t => t.type === 'END' && t.index > firstTagIndex);
 
-                // 2. Push remaining content as new role message
-                if (innerContent.trim().length > 0) {
-                    resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                if (!hasEndAfter) {
+                    const innerContent = text.substring(contentStartIndex);
+                    
+                    if (currentTextBuffer.trim().length > 0) {
+                        resultMessages.push({ role: baseRole, content: currentTextBuffer });
+                    }
+                    currentTextBuffer = "";
+
+                    if (innerContent.trim().length > 0) {
+                        resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                    }
+                    
+                    cursor = text.length;
+                } else {
+                    // Treat as normal text if there is an END tag somewhere after
+                    currentTextBuffer += firstTag.START;
+                    cursor = contentStartIndex;
                 }
-                
-                cursor = text.length; // End of message
             } else {
                 // Matching end tag found
                 const innerContent = text.substring(contentStartIndex, endTagIndex);
