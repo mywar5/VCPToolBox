@@ -88,14 +88,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="form-group relative-options" style="display: ${(rule.type === 'relative' || rule.type === 'embed') ? 'flex' : 'none'};">
                     <label>相对位置</label>
                     <select class="rule-position">
-                        <option value="before" ${rule.position === 'before' ? 'selected' : ''}>之前</option>
+                        <option value="before" ${(rule.position === 'before' || !rule.position) ? 'selected' : ''}>之前</option>
                         <option value="after" ${rule.position === 'after' ? 'selected' : ''}>之后</option>
                     </select>
                 </div>
-                <div class="form-group relative-options" style="display: ${rule.type === 'relative' ? 'flex' : 'none'};">
+                <div class="form-group relative-options" style="display: ${(rule.type === 'relative' || rule.type === 'embed') ? 'flex' : 'none'};">
                     <label>目标</label>
                     <select class="rule-target">
-                        <option value="system" ${rule.target === 'system' ? 'selected' : ''}>系统提示</option>
+                        <option value="system" ${(rule.target === 'system' || !rule.target) ? 'selected' : ''}>系统提示</option>
                         <option value="last_user" ${rule.target === 'last_user' ? 'selected' : ''}>最后的用户消息</option>
                     </select>
                 </div>
@@ -217,10 +217,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     textareaHeight: card.querySelector('.rule-content-text').style.height
                 }
             };
-            if (rule.type === 'relative') {
+            if (rule.type === 'relative' || rule.type === 'embed') {
                 rule.position = card.querySelector('.rule-position').value;
                 rule.target = card.querySelector('.rule-target').value;
-            } else {
+            }
+            
+            if (rule.type === 'depth') {
                 rule.depth = parseInt(card.querySelector('.rule-depth').value, 10);
             }
             rules.push(rule);
