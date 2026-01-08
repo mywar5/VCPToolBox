@@ -81,6 +81,7 @@ const ROLE_DIVIDER_USER = (process.env.RoleDividerUser || "true").toLowerCase() 
 const ROLE_DIVIDER_SCAN_SYSTEM = (process.env.RoleDividerScanSystem || "true").toLowerCase() === "true"; // 新增：System角色扫描开关
 const ROLE_DIVIDER_SCAN_ASSISTANT = (process.env.RoleDividerScanAssistant || "true").toLowerCase() === "true"; // 新增：Assistant角色扫描开关
 const ROLE_DIVIDER_SCAN_USER = (process.env.RoleDividerScanUser || "true").toLowerCase() === "true"; // 新增：User角色扫描开关
+const ROLE_DIVIDER_REMOVE_DISABLED_TAGS = (process.env.RoleDividerRemoveDisabledTags || "true").toLowerCase() === "true"; // 新增：禁用标签清除开关
 
 let ROLE_DIVIDER_IGNORE_LIST = [];
 try {
@@ -720,6 +721,7 @@ const chatCompletionHandler = new ChatCompletionHandler({
         assistant: ROLE_DIVIDER_SCAN_ASSISTANT,
         user: ROLE_DIVIDER_SCAN_USER
     },
+    roleDividerRemoveDisabledTags: ROLE_DIVIDER_REMOVE_DISABLED_TAGS,
     maxVCPLoopStream: parseInt(process.env.MaxVCPLoopStream),
     maxVCPLoopNonStream: parseInt(process.env.MaxVCPLoopNonStream),
     apiRetries: parseInt(process.env.ApiRetries) || 3, // 新增：API重试次数

@@ -44,15 +44,10 @@ function normalizeForIgnore(text) {
  * @param {Object} options.scanSwitches - Scan switches { system: bool, assistant: bool, user: bool }.
  * @returns {Array<Object>} - Array of resulting messages.
  */
-function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true } } = {}) {
-    // Check if this message's role should be scanned
-    if (!scanSwitches[message.role]) {
-        return [message];
-    }
-
+function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, removeDisabledTags = true } = {}) {
     // Handle array content (multi-modal)
     if (Array.isArray(message.content)) {
-        return processArrayMessage(message, { ignoreList, switches, scanSwitches });
+        return processArrayMessage(message, { ignoreList, switches, scanSwitches, removeDisabledTags });
     }
 
     if (typeof message.content !== 'string') {
@@ -62,11 +57,18 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
     let text = message.content;
 
     // Step 0: Remove tags of disabled roles from the entire text before any other processing
-    for (const key in TAGS) {
-        const tagConfig = TAGS[key];
-        if (!switches[tagConfig.ROLE]) {
-            text = text.replaceAll(tagConfig.START, "").replaceAll(tagConfig.END, "");
+    if (removeDisabledTags) {
+        for (const key in TAGS) {
+            const tagConfig = TAGS[key];
+            if (!switches[tagConfig.ROLE]) {
+                text = text.replaceAll(tagConfig.START, "").replaceAll(tagConfig.END, "");
+            }
         }
+    }
+
+    // Check if this message's role should be scanned
+    if (!scanSwitches[message.role]) {
+        return [{ ...message, content: text }];
     }
 
     const baseRole = message.role;
@@ -292,7 +294,7 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 /**
  * Process a message with array content (multi-modal).
  */
-function processArrayMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true } } = {}) {
+function processArrayMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, removeDisabledTags = true } = {}) {
     const baseRole = message.role;
     const originalParts = message.content;
     const resultMessages = [];
@@ -306,7 +308,7 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
 
         // Process the text part using the string logic
         const tempMsg = { role: baseRole, content: part.text };
-        const splitResults = processSingleMessage(tempMsg, { ignoreList, switches, scanSwitches });
+        const splitResults = processSingleMessage(tempMsg, { ignoreList, switches, scanSwitches, removeDisabledTags });
 
         if (splitResults.length === 1) {
             // No split occurred in this text part
@@ -356,7 +358,7 @@ function processArrayMessage(message, { ignoreList = [], switches = { system: tr
  * @param {number} options.skipCount - Number of initial messages to skip (e.g. SystemPrompt).
  * @returns {Array<Object>} - New array of processed messages.
  */
-function process(messages, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, skipCount = 0 } = {}) {
+function process(messages, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, removeDisabledTags = true, skipCount = 0 } = {}) {
     if (!Array.isArray(messages)) {
         return messages;
     }
@@ -368,7 +370,7 @@ function process(messages, { ignoreList = [], switches = { system: true, assista
             newMessages.push(msg);
             continue;
         }
-        const processed = processSingleMessage(msg, { ignoreList, switches, scanSwitches });
+        const processed = processSingleMessage(msg, { ignoreList, switches, scanSwitches, removeDisabledTags });
         newMessages.push(...processed);
     }
     return newMessages;

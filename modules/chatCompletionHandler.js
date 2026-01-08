@@ -192,6 +192,7 @@ class ChatCompletionHandler {
       roleDividerIgnoreList, // 新增
       roleDividerSwitches, // 新增
       roleDividerScanSwitches, // 新增
+      roleDividerRemoveDisabledTags, // 新增
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -260,6 +261,7 @@ class ChatCompletionHandler {
               ignoreList: roleDividerIgnoreList,
               switches: roleDividerSwitches,
               scanSwitches: roleDividerScanSwitches,
+              removeDisabledTags: roleDividerRemoveDisabledTags,
               skipCount: 1
           });
           if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
@@ -724,6 +726,7 @@ class ChatCompletionHandler {
                   ignoreList: roleDividerIgnoreList,
                   switches: roleDividerSwitches,
                   scanSwitches: roleDividerScanSwitches,
+                  removeDisabledTags: roleDividerRemoveDisabledTags,
                   skipCount: 0
               });
           }
@@ -1481,6 +1484,7 @@ class ChatCompletionHandler {
                     ignoreList: roleDividerIgnoreList,
                     switches: roleDividerSwitches,
                     scanSwitches: roleDividerScanSwitches,
+                    removeDisabledTags: roleDividerRemoveDisabledTags,
                     skipCount: 0
                 });
             }
