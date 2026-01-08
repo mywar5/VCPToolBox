@@ -188,8 +188,10 @@ class ChatCompletionHandler {
       apiRetryDelay,
       RAGMemoRefresh,
       enableRoleDivider, // 新增
+      enableRoleDividerInLoop, // 新增
       roleDividerIgnoreList, // 新增
       roleDividerSwitches, // 新增
+      roleDividerScanSwitches, // 新增
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -257,6 +259,7 @@ class ChatCompletionHandler {
           originalBody.messages = roleDivider.process(originalBody.messages, {
               ignoreList: roleDividerIgnoreList,
               switches: roleDividerSwitches,
+              scanSwitches: roleDividerScanSwitches,
               skipCount: 1
           });
           if (DEBUG_MODE) await writeDebugLog('LogAfterInitialRoleDivider', originalBody.messages);
@@ -714,7 +717,17 @@ class ChatCompletionHandler {
 
         // --- VCP Loop ---
         while (recursionDepth < maxRecursion) {
-          currentMessagesForLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+          // Apply Role Divider to the AI's response before adding to history
+          let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+          if (enableRoleDivider && enableRoleDividerInLoop) {
+              assistantMessages = roleDivider.process(assistantMessages, {
+                  ignoreList: roleDividerIgnoreList,
+                  switches: roleDividerSwitches,
+                  scanSwitches: roleDividerScanSwitches,
+                  skipCount: 0
+              });
+          }
+          currentMessagesForLoop.push(...assistantMessages);
 
           const toolRequestStartMarker = '<<<[TOOL_REQUEST]>>>';
           const toolRequestEndMarker = '<<<[END_TOOL_REQUEST]>>>';
@@ -1461,7 +1474,17 @@ class ChatCompletionHandler {
             }
 
             // Add the AI's full response (that contained the tool requests) to the messages for the next AI call
-            currentMessagesForNonStreamLoop.push({ role: 'assistant', content: currentAIContentForLoop });
+            // Apply Role Divider before adding to history
+            let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+            if (enableRoleDivider && enableRoleDividerInLoop) {
+                assistantMessages = roleDivider.process(assistantMessages, {
+                    ignoreList: roleDividerIgnoreList,
+                    switches: roleDividerSwitches,
+                    scanSwitches: roleDividerScanSwitches,
+                    skipCount: 0
+                });
+            }
+            currentMessagesForNonStreamLoop.push(...assistantMessages);
 
             // Process normal (non-archery) calls and wait for their results to send back to the AI
             const toolExecutionPromises = normalCalls.map(async toolCall => {

@@ -41,9 +41,20 @@ function normalizeForIgnore(text) {
  * @param {Object} options - Configuration options.
  * @param {Array<string>} options.ignoreList - List of content strings to ignore (keep tags as is).
  * @param {Object} options.switches - Granular switches { system: bool, assistant: bool, user: bool }.
+ * @param {Object} options.scanSwitches - Scan switches { system: bool, assistant: bool, user: bool }.
  * @returns {Array<Object>} - Array of resulting messages.
  */
-function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true } } = {}) {
+function processSingleMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true } } = {}) {
+    // Check if this message's role should be scanned
+    if (!scanSwitches[message.role]) {
+        return [message];
+    }
+
+    // Handle array content (multi-modal)
+    if (Array.isArray(message.content)) {
+        return processArrayMessage(message, { ignoreList, switches, scanSwitches });
+    }
+
     if (typeof message.content !== 'string') {
         return [message];
     }
@@ -90,30 +101,46 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
             continue;
         }
 
-        // Find the first occurrence of ANY start tag after cursor, but not inside protected blocks
+        // Find the first occurrence of ANY start OR end tag after cursor, but not inside protected blocks
         let firstTag = null;
         let firstTagIndex = -1;
+        let isEndTag = false;
 
         for (const key in TAGS) {
             const tagConfig = TAGS[key];
             // Skip if this role's switch is off
             if (!switches[tagConfig.ROLE]) continue;
 
-            let searchIdx = cursor;
+            // Check for START tag
+            let searchIdxStart = cursor;
             while (true) {
-                const index = text.indexOf(tagConfig.START, searchIdx);
+                const index = text.indexOf(tagConfig.START, searchIdxStart);
                 if (index === -1) break;
-
-                // Check if this tag is inside a protected block
-                const isProtected = protectedBlocks.some(b => index >= b.start && index < b.end);
-                if (isProtected) {
-                    searchIdx = index + tagConfig.START.length;
+                if (protectedBlocks.some(b => index >= b.start && index < b.end)) {
+                    searchIdxStart = index + tagConfig.START.length;
                     continue;
                 }
-
                 if (firstTagIndex === -1 || index < firstTagIndex) {
                     firstTagIndex = index;
                     firstTag = tagConfig;
+                    isEndTag = false;
+                }
+                break;
+            }
+
+            // Check for END tag (Robustness: handle END without START)
+            let searchIdxEnd = cursor;
+            while (true) {
+                const index = text.indexOf(tagConfig.END, searchIdxEnd);
+                if (index === -1) break;
+                if (protectedBlocks.some(b => index >= b.start && index < b.end)) {
+                    searchIdxEnd = index + tagConfig.END.length;
+                    continue;
+                }
+                if (firstTagIndex === -1 || index < firstTagIndex) {
+                    firstTagIndex = index;
+                    firstTag = tagConfig;
+                    isEndTag = true;
                 }
                 break;
             }
@@ -128,37 +155,75 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
         // Append text before the tag to buffer
         currentTextBuffer += text.substring(cursor, firstTagIndex);
 
-        // Look for the corresponding end tag
-        const contentStartIndex = firstTagIndex + firstTag.START.length;
-        const endTagIndex = text.indexOf(firstTag.END, contentStartIndex);
+        if (isEndTag) {
+            // Robustness Case 1: END tag found without a preceding START tag in this scan
+            // Logic: Treat everything before this END tag as a split block for this role
+            const innerContent = currentTextBuffer;
+            currentTextBuffer = ""; // Clear buffer as it's now inner content
 
-        if (endTagIndex === -1) {
-            // No matching end tag found: Remove the start tag and treat as normal text
-            cursor = contentStartIndex;
-        } else {
-            // Matching end tag found
-            const innerContent = text.substring(contentStartIndex, endTagIndex);
-
-            // Check ignore list with strict matching (normalized)
+            // Check ignore list (though unlikely for an orphan END tag, we stay consistent)
             const normalizedInner = normalizeForIgnore(innerContent);
-            if (normalizedIgnoreList.includes(normalizedInner)) {
-                // If ignored, treat the whole block (tags + content) as normal text
-                currentTextBuffer += firstTag.START + innerContent + firstTag.END;
-                cursor = endTagIndex + firstTag.END.length;
+            if (normalizedInner.length > 0 && !ignoreList.map(normalizeForIgnore).includes(normalizedInner)) {
+                // Push inner content as new role message
+                resultMessages.push({ role: firstTag.ROLE, content: innerContent });
             } else {
-                // Valid split block
+                // If ignored or empty, keep as is (but here we just don't split)
+                currentTextBuffer = innerContent + firstTag.END;
+            }
+            cursor = firstTagIndex + firstTag.END.length;
+        } else {
+            // Normal Case: START tag found
+            const contentStartIndex = firstTagIndex + firstTag.START.length;
+            const endTagIndex = text.indexOf(firstTag.END, contentStartIndex);
+
+            // Check if the found endTagIndex is protected
+            let validEndTagIndex = endTagIndex;
+            while (validEndTagIndex !== -1 && protectedBlocks.some(b => validEndTagIndex >= b.start && validEndTagIndex < b.end)) {
+                validEndTagIndex = text.indexOf(firstTag.END, validEndTagIndex + firstTag.END.length);
+            }
+
+            if (validEndTagIndex === -1) {
+                // Robustness Case 2: START tag found without a following END tag
+                // Logic: Treat everything AFTER this START tag as a split block for this role
+                const innerContent = text.substring(contentStartIndex);
                 
-                // 1. Push accumulated buffer as base role message (if not empty or just whitespace)
+                // 1. Push accumulated buffer as base role message
                 if (currentTextBuffer.trim().length > 0) {
                     resultMessages.push({ role: baseRole, content: currentTextBuffer });
                 }
                 currentTextBuffer = "";
 
-                // 2. Push inner content as new role message
-                resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                // 2. Push remaining content as new role message
+                if (innerContent.trim().length > 0) {
+                    resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+                }
+                
+                cursor = text.length; // End of message
+            } else {
+                // Matching end tag found
+                const innerContent = text.substring(contentStartIndex, endTagIndex);
 
-                // 3. Move cursor past the end tag
-                cursor = endTagIndex + firstTag.END.length;
+                // Check ignore list with strict matching (normalized)
+                const normalizedInner = normalizeForIgnore(innerContent);
+                if (normalizedIgnoreList.includes(normalizedInner)) {
+                    // If ignored, treat the whole block (tags + content) as normal text
+                    currentTextBuffer += firstTag.START + innerContent + firstTag.END;
+                    cursor = endTagIndex + firstTag.END.length;
+                } else {
+                    // Valid split block
+                    
+                    // 1. Push accumulated buffer as base role message (if not empty or just whitespace)
+                    if (currentTextBuffer.trim().length > 0) {
+                        resultMessages.push({ role: baseRole, content: currentTextBuffer });
+                    }
+                    currentTextBuffer = "";
+
+                    // 2. Push inner content as new role message
+                    resultMessages.push({ role: firstTag.ROLE, content: innerContent });
+
+                    // 3. Move cursor past the end tag
+                    cursor = endTagIndex + firstTag.END.length;
+                }
             }
         }
     }
@@ -177,15 +242,73 @@ function processSingleMessage(message, { ignoreList = [], switches = { system: t
 }
 
 /**
+ * Process a message with array content (multi-modal).
+ */
+function processArrayMessage(message, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true } } = {}) {
+    const baseRole = message.role;
+    const originalParts = message.content;
+    const resultMessages = [];
+    let currentPartsBuffer = [];
+
+    for (const part of originalParts) {
+        if (part.type !== 'text' || typeof part.text !== 'string') {
+            currentPartsBuffer.push(part);
+            continue;
+        }
+
+        // Process the text part using the string logic
+        const tempMsg = { role: baseRole, content: part.text };
+        const splitResults = processSingleMessage(tempMsg, { ignoreList, switches, scanSwitches });
+
+        if (splitResults.length === 1) {
+            // No split occurred in this text part
+            currentPartsBuffer.push({ type: 'text', text: splitResults[0].content });
+        } else {
+            // Split occurred!
+            
+            // 1. The first part of splitResults belongs to the current buffer
+            if (splitResults[0].content.trim().length > 0) {
+                currentPartsBuffer.push({ type: 'text', text: splitResults[0].content });
+            }
+            
+            // 2. Push the accumulated buffer as a message
+            if (currentPartsBuffer.length > 0) {
+                resultMessages.push({ role: baseRole, content: currentPartsBuffer });
+                currentPartsBuffer = [];
+            }
+
+            // 3. Middle parts are new roles (they are always pure text)
+            for (let i = 1; i < splitResults.length - 1; i++) {
+                resultMessages.push(splitResults[i]);
+            }
+
+            // 4. The last part becomes the new start of the buffer
+            const lastSplitPart = splitResults[splitResults.length - 1];
+            if (lastSplitPart.content.trim().length > 0) {
+                currentPartsBuffer.push({ type: 'text', text: lastSplitPart.content });
+            }
+        }
+    }
+
+    // Push remaining buffer
+    if (currentPartsBuffer.length > 0) {
+        resultMessages.push({ role: baseRole, content: currentPartsBuffer });
+    }
+
+    return resultMessages.length > 0 ? resultMessages : [message];
+}
+
+/**
  * Process an array of messages.
  * @param {Array<Object>} messages - Array of message objects.
  * @param {Object} options - Configuration options.
  * @param {Array<string>} options.ignoreList - List of content strings to ignore.
  * @param {Object} options.switches - Granular switches { system: bool, assistant: bool, user: bool }.
+ * @param {Object} options.scanSwitches - Scan switches { system: bool, assistant: bool, user: bool }.
  * @param {number} options.skipCount - Number of initial messages to skip (e.g. SystemPrompt).
  * @returns {Array<Object>} - New array of processed messages.
  */
-function process(messages, { ignoreList = [], switches = { system: true, assistant: true, user: true }, skipCount = 0 } = {}) {
+function process(messages, { ignoreList = [], switches = { system: true, assistant: true, user: true }, scanSwitches = { system: true, assistant: true, user: true }, skipCount = 0 } = {}) {
     if (!Array.isArray(messages)) {
         return messages;
     }
@@ -197,7 +320,7 @@ function process(messages, { ignoreList = [], switches = { system: true, assista
             newMessages.push(msg);
             continue;
         }
-        const processed = processSingleMessage(msg, { ignoreList, switches });
+        const processed = processSingleMessage(msg, { ignoreList, switches, scanSwitches });
         newMessages.push(...processed);
     }
     return newMessages;
