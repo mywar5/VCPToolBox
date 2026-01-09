@@ -194,6 +194,8 @@ class ChatCompletionHandler {
       roleDividerSwitches, // 新增
       roleDividerScanSwitches, // 新增
       roleDividerRemoveDisabledTags, // 新增
+      chinaModel1, // 新增
+      chinaModel1Cot, // 新增
     } = this.config;
 
     const shouldShowVCP = SHOW_VCP_OUTPUT || forceShowVCP;
@@ -248,6 +250,18 @@ class ChatCompletionHandler {
         if (redirectedModel !== originalModel) {
           originalBody = { ...originalBody, model: redirectedModel };
           console.log(`[ModelRedirect] 客户端请求模型 '${originalModel}' 已重定向为后端模型 '${redirectedModel}'`);
+        }
+
+        // --- 国产A类模型推理功能控制 (ChinaModel Thinking Control) ---
+        if (chinaModel1 && Array.isArray(chinaModel1) && chinaModel1.length > 0) {
+            const modelNameLower = originalBody.model.toLowerCase();
+            const isChinaModel = chinaModel1.some(m => modelNameLower.includes(m.toLowerCase()));
+            if (isChinaModel) {
+                originalBody.enable_thinking = chinaModel1Cot;
+                if (DEBUG_MODE) {
+                    console.log(`[ChinaModel] 模型 '${originalBody.model}' 匹配成功。设置 enable_thinking = ${chinaModel1Cot}`);
+                }
+            }
         }
       }
 

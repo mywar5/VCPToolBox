@@ -90,6 +90,15 @@ try {
     console.error("Failed to parse RoleDividerIgnoreList:", e);
 }
 
+// 新增：国产A类模型推理功能配置
+let CHINA_MODEL_1 = [];
+try {
+    CHINA_MODEL_1 = (process.env.ChinaModel1 || "").split(',').map(m => m.trim()).filter(m => m !== "");
+} catch (e) {
+    console.error("Failed to parse ChinaModel1:", e);
+}
+const CHINA_MODEL_1_COT = (process.env.ChinaModel1Cot || "false").toLowerCase() === "true";
+
 // 新增：模型重定向功能
 const ModelRedirectHandler = require('./modelRedirectHandler.js');
 const modelRedirectHandler = new ModelRedirectHandler();
@@ -728,7 +737,9 @@ const chatCompletionHandler = new ChatCompletionHandler({
     apiRetryDelay: parseInt(process.env.ApiRetryDelay) || 1000, // 新增：API重试延迟
     cachedEmojiLists,
     detectors,
-    superDetectors
+    superDetectors,
+    chinaModel1: CHINA_MODEL_1,
+    chinaModel1Cot: CHINA_MODEL_1_COT
 });
 
 // Route for standard chat completions. VCP info is shown based on the .env config.
