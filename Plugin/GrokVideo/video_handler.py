@@ -145,81 +145,80 @@ def main():
     try:
         if not prompt:
             raise ValueError("Missing prompt")
-        if not image_url and not image_base64_input:
-            raise ValueError("Missing image_url or image_base64")
-
-        # 1. 处理图片
+        # 1. 处理图片 (可选)
+        image_base64 = None
         if image_base64_input:
             image_base64 = process_image_from_base64(image_base64_input)
-        else:
+        elif image_url and isinstance(image_url, str) and image_url.strip():
             image_base64 = process_image_from_url(image_url)
 
         # 2. 调用 Grok API (同步等待)
-            # 自动处理 URL 拼接，确保包含 v1/chat/completions
-            base_url = api_base.rstrip('/')
-            if not base_url.endswith('/v1'):
-                if not base_url.endswith('/v1/chat/completions'):
-                    api_url = f"{base_url}/v1/chat/completions"
-                else:
-                    api_url = base_url
+        # 自动处理 URL 拼接，确保包含 v1/chat/completions
+        base_url = api_base.rstrip('/')
+        if not base_url.endswith('/v1'):
+            if not base_url.endswith('/v1/chat/completions'):
+                api_url = f"{base_url}/v1/chat/completions"
             else:
-                api_url = f"{base_url}/chat/completions"
+                api_url = base_url
+        else:
+            api_url = f"{base_url}/chat/completions"
 
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            content_list = [{"type": "text", "text": prompt}]
-            if image_base64:
-                content_list.append({"type": "image_url", "image_url": {"url": image_base64}})
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        content_list = [{"type": "text", "text": prompt}]
+        if image_base64:
+            content_list.append({"type": "image_url", "image_url": {"url": image_base64}})
 
-            payload = {
-                "model": model,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": content_list
-                    }
-                ]
-            }
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": content_list
+                }
+            ]
+        }
 
-            log_event("info", f"[{task_id}] Calling Grok API (Synchronous)", {"url": api_url, "model": model})
-            response = requests.post(api_url, json=payload, headers=headers, timeout=300)
-            response.raise_for_status()
-            result = response.json()
+        log_event("info", f"[{task_id}] Calling Grok API (Synchronous)", {"url": api_url, "model": model})
+        response = requests.post(api_url, json=payload, headers=headers, timeout=300)
+        response.raise_for_status()
+        result = response.json()
 
-            # 3. 解析视频 URL
-            content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-            video_url = None
-            url_match = re.search(r'(https?://[^\s<>"\']+\.mp4[^\s<>"\']*)', content, re.IGNORECASE)
-            if url_match:
-                video_url = url_match.group(1)
+        # 3. 解析视频 URL
+        content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        video_url = None
+        # 兼容多种视频/图片格式的正则匹配
+        url_match = re.search(r'(https?://[^\s<>"\']+\.(mp4|webp|png|jpg|jpeg)[^\s<>"\']*)', content, re.IGNORECASE)
+        if url_match:
+            video_url = url_match.group(1)
+        
+        if not video_url:
+            video_url = result.get("video_url") # 备选方案
+
+        if video_url:
+            log_event("success", f"[{task_id}] Video URL obtained: {video_url}")
             
-            if not video_url:
-                video_url = result.get("video_url") # 备选方案
+            # 4. 委托下载进程 (异步，不阻塞主进程退出)
+            try:
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+                downloader_path = os.path.join(script_dir, "video_downloader.py")
+                # 使用 Popen 启动，不等待结束
+                subprocess.Popen(
+                    [sys.executable, downloader_path, video_url, task_id],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True # Windows 下防止随父进程一起关闭
+                )
+                log_event("info", f"[{task_id}] Delegated downloader process started.")
+            except Exception as e:
+                log_event("error", f"[{task_id}] Failed to start downloader process: {e}")
 
-            if video_url:
-                log_event("success", f"[{task_id}] Video URL obtained: {video_url}")
-                
-                # 4. 委托下载进程 (异步，不阻塞主进程退出)
-                try:
-                    script_dir = os.path.dirname(os.path.abspath(__file__))
-                    downloader_path = os.path.join(script_dir, "video_downloader.py")
-                    # 使用 Popen 启动，不等待结束
-                    subprocess.Popen(
-                        [sys.executable, downloader_path, video_url, task_id],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        start_new_session=True # Windows 下防止随父进程一起关闭
-                    )
-                    log_event("info", f"[{task_id}] Delegated downloader process started.")
-                except Exception as e:
-                    log_event("error", f"[{task_id}] Failed to start downloader process: {e}")
-
-                ai_msg = f"Grok 视频生成成功！\n视频 URL: {video_url}\n文件正在后台下载中。"
-                print_json_output("success", result={"video_url": video_url, "requestId": task_id}, ai_message=ai_msg)
-            else:
-                raise ValueError(f"未能从 API 响应中提取视频 URL。内容: {content[:200]}")
+            ai_msg = f"Grok 视频生成成功！\n视频 URL: {video_url}\n文件正在后台下载中。"
+            print_json_output("success", result={"video_url": video_url, "requestId": task_id}, ai_message=ai_msg)
+        else:
+            raise ValueError(f"未能从 API 响应中提取视频 URL。内容: {content[:200]}")
 
     except LocalFileNotFoundError as e:
         # 超栈追踪：抛出特定格式的 JSON 引导主服务处理
