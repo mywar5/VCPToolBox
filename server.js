@@ -956,7 +956,7 @@ async function handleDiaryFromAIResponse(responseText) {
 
 // Define dailyNoteRootPath here as it's needed by the adminPanelRoutes module
 // and was previously defined within the moved block.
-const dailyNoteRootPath = path.join(__dirname, 'dailynote');
+const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(__dirname, 'dailynote');
 
 // Import and use the admin panel routes, passing the getter for currentServerLogPath
 const adminPanelRoutes = require('./routes/adminPanelRoutes')(
