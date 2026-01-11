@@ -197,12 +197,28 @@ async function handleCreateCommand(args) {
 
         const baseFileNameWithoutExt = `${datePart}-${timeStringForFile}`;
         const fileExtension = `.${CONFIGURED_EXTENSION}`;
-        const finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
-        const filePath = path.join(dirPath, finalFileName);
-
-        debugLog(`Target file path: ${filePath}`);
+        
+        let finalFileName = `${baseFileNameWithoutExt}${fileExtension}`;
+        let filePath = path.join(dirPath, finalFileName);
+        let counter = 1;
 
         await fs.mkdir(dirPath, { recursive: true });
+
+        // 循环检查文件名冲突
+        while (true) {
+            try {
+                await fs.access(filePath);
+                // 如果文件已存在，增加计数器并重试
+                counter++;
+                finalFileName = `${baseFileNameWithoutExt}(${counter})${fileExtension}`;
+                filePath = path.join(dirPath, finalFileName);
+            } catch (err) {
+                // 文件不存在，可以使用此路径
+                break;
+            }
+        }
+
+        debugLog(`Target file path: ${filePath}`);
         const fileContent = `[${datePart}] - ${actualMaidName}\n${processedContent}`;
         await fs.writeFile(filePath, fileContent);
         debugLog(`Successfully wrote file (length: ${fileContent.length})`);
