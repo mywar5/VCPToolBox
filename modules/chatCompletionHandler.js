@@ -8,6 +8,77 @@ const path = require('path');
 const { getAuthCode} = require('./captchaDecoder'); // 导入统一的解码函数
 const { StringDecoder } = require('string_decoder'); // 修复中文编码截断问题
 
+/**
+ * 检测工具返回结果是否为错误
+ * @param {any} result - 工具返回的结果
+ * @returns {boolean} - 是否为错误结果
+ */
+function isToolResultError(result) {
+    if (result === undefined || result === null) {
+        return false; // 空结果不视为错误
+    }
+    
+    // 1. 对象形式的错误检测
+    if (typeof result === 'object') {
+        // 检查常见的错误标识字段
+        if (result.error === true ||
+            result.success === false ||
+            result.status === 'error' ||
+            result.status === 'failed' ||
+            result.code?.toString().startsWith('4') || // 4xx 错误码
+            result.code?.toString().startsWith('5')) { // 5xx 错误码
+            return true;
+        }
+        
+        // 对象转字符串后检查
+        try {
+            const jsonStr = JSON.stringify(result).toLowerCase();
+            return jsonStr.includes('"error"') && !jsonStr.includes('"error":false');
+        } catch (e) {
+            return false;
+        }
+    }
+    
+    // 2. 字符串形式的错误检测（模糊匹配）
+    if (typeof result === 'string') {
+        const lowerResult = result.toLowerCase();
+        
+        // 检查是否以错误前缀开头（更可靠的判断）
+        const errorPrefixes = [
+            '[error]', '[错误]', '[失败]', 'error:', '错误：', '失败：'
+        ];
+        for (const prefix of errorPrefixes) {
+            if (lowerResult.startsWith(prefix)) {
+                return true;
+            }
+        }
+        
+        // 模糊匹配（需要更谨慎）
+        // 只有在明确包含"错误"或"失败"这类强指示词时才认为是错误
+        if (result.includes('错误') || result.includes('失败') ||
+            lowerResult.includes('error:') || lowerResult.includes('failed:')) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * 格式化工具结果为字符串
+ * @param {any} result - 工具返回的结果
+ * @returns {string} - 格式化后的字符串
+ */
+function formatToolResult(result) {
+    if (result === undefined || result === null) {
+        return '(无返回内容)';
+    }
+    if (typeof result === 'object') {
+        return JSON.stringify(result, null, 2);
+    }
+    return String(result);
+}
+
 async function getRealAuthCode(debugMode = false) {
   try {
     const authCodePath = path.join(__dirname, '..', 'Plugin', 'UserAuth', 'code.bin');
@@ -849,90 +920,190 @@ class ChatCompletionHandler {
           const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
           const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
 
-          // Execute archery calls without waiting for results to be sent back to the AI
-          archeryCalls.forEach(toolCall => {
+          // Execute archery calls - 但收集错误信息以便返回给 AI
+          const archeryErrorContents = []; // 用于收集 archery 调用的错误
+
+          await Promise.all(archeryCalls.map(async toolCall => {
             if (DEBUG_MODE)
               console.log(
-                `[VCP Stream Loop] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`,
+                `[VCP Stream Loop] Executing ARCHERY tool call: ${toolCall.name} with args:`,
                 toolCall.args,
               );
-            // Fire-and-forget execution, but handle logging and notifications in then/catch
-            pluginManager
-              .processToolCall(toolCall.name, toolCall.args, clientIp)
-              .then(async pluginResult => {
-                await writeDebugLog(`VCP-Stream-Archery-Result-${toolCall.name}`, {
-                  args: toolCall.args,
-                  result: pluginResult,
-                });
-                const toolResultText =
-                  pluginResult !== undefined && pluginResult !== null
-                    ? typeof pluginResult === 'object'
-                      ? JSON.stringify(pluginResult, null, 2)
-                      : String(pluginResult)
-                    : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                // Archery调用的WebSocket通知应该始终发送，不受中止状态影响
-                webSocketServer.broadcast(
-                  {
-                    type: 'vcp_log',
-                    data: {
-                      tool_name: toolCall.name,
-                      status: 'success',
-                      content: toolResultText,
-                      source: 'stream_loop_archery',
-                    },
-                  },
-                  'VCPLog',
-                );
-                const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
-                if (
-                  pluginManifestForStream &&
-                  pluginManifestForStream.webSocketPush &&
-                  pluginManifestForStream.webSocketPush.enabled
-                ) {
-                  const wsPushMessageStream = {
-                    type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                    data: pluginResult,
-                  };
-                  webSocketServer.broadcast(
-                    wsPushMessageStream,
-                    pluginManifestForStream.webSocketPush.targetClientType || null,
-                  );
-                }
-                // 但HTTP流写入仍需检查流状态和中止状态
-                if (shouldShowVCP && !res.writableEnded) {
-                  vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'success', pluginResult, abortController);
-                }
-              })
-              .catch(pluginError => {
-                console.error(
-                  `[VCP Stream Loop ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`,
-                  pluginError.message,
-                );
-                const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                // Archery调用的WebSocket通知应该始终发送
-                webSocketServer.broadcast(
-                  {
-                    type: 'vcp_log',
-                    data: {
-                      tool_name: toolCall.name,
-                      status: 'error',
-                      content: toolResultText,
-                      source: 'stream_loop_archery_error',
-                    },
-                  },
-                  'VCPLog',
-                );
-                // 但HTTP流写入仍需检查流状态和中止状态
-                if (shouldShowVCP && !res.writableEnded) {
-                  vcpInfoHandler.streamVcpInfo(res, originalBody.model, toolCall.name, 'error', toolResultText, abortController);
-                }
+            
+            let pluginResult;
+            let isError = false;
+            let errorMessage = '';
+            
+            try {
+              pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
+              await writeDebugLog(`VCP-Stream-Archery-Result-${toolCall.name}`, {
+                args: toolCall.args,
+                result: pluginResult,
               });
-          });
+              
+              const toolResultText = formatToolResult(pluginResult);
+              
+              // 检测是否为错误结果
+              isError = isToolResultError(pluginResult);
+              if (isError) {
+                errorMessage = toolResultText;
+                if (DEBUG_MODE) {
+                  console.log(`[VCP Archery] 检测到工具 ${toolCall.name} 返回错误，将通知AI`);
+                }
+              }
+              
+              // WebSocket 通知（始终发送）
+              webSocketServer.broadcast(
+                {
+                  type: 'vcp_log',
+                  data: {
+                    tool_name: toolCall.name,
+                    status: isError ? 'error' : 'success',
+                    content: toolResultText,
+                    source: 'stream_loop_archery',
+                  },
+                },
+                'VCPLog',
+              );
+              
+              // WebSocket Push 配置
+              const pluginManifestForStream = pluginManager.getPlugin(toolCall.name);
+              if (
+                pluginManifestForStream &&
+                pluginManifestForStream.webSocketPush &&
+                pluginManifestForStream.webSocketPush.enabled
+              ) {
+                const wsPushMessageStream = {
+                  type: pluginManifestForStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                  data: pluginResult,
+                };
+                webSocketServer.broadcast(
+                  wsPushMessageStream,
+                  pluginManifestForStream.webSocketPush.targetClientType || null,
+                );
+              }
+              
+              // VCP 输出（如果启用）- 对于 archery 调用，仅在错误时输出
+              if (shouldShowVCP && !res.writableEnded && isError) {
+                vcpInfoHandler.streamVcpInfo(
+                  res,
+                  originalBody.model,
+                  toolCall.name,
+                  'error',
+                  pluginResult,
+                  abortController
+                );
+              }
+              
+            } catch (pluginError) {
+              console.error(
+                `[VCP Stream Loop ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`,
+                pluginError.message,
+              );
+              isError = true;
+              errorMessage = `执行插件 ${toolCall.name} 时发生异常：${pluginError.message || '未知错误'}`;
+              
+              webSocketServer.broadcast(
+                {
+                  type: 'vcp_log',
+                  data: {
+                    tool_name: toolCall.name,
+                    status: 'error',
+                    content: errorMessage,
+                    source: 'stream_loop_archery_error',
+                  },
+                },
+                'VCPLog',
+              );
+              
+              if (shouldShowVCP && !res.writableEnded) {
+                vcpInfoHandler.streamVcpInfo(
+                  res,
+                  originalBody.model,
+                  toolCall.name,
+                  'error',
+                  errorMessage,
+                  abortController
+                );
+              }
+            }
+            
+            // 如果是错误，收集起来以便后续返回给 AI
+            if (isError) {
+              archeryErrorContents.push({
+                type: 'text',
+                text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${errorMessage}`
+              });
+            }
+          }));
 
-          // If there are no normal calls to wait for, the AI's turn is over.
+          // 处理纯 archery 错误的情况
           if (normalCalls.length === 0) {
+            if (archeryErrorContents.length > 0) {
+              // 有 archery 错误需要通知 AI，不能直接结束循环
+              if (DEBUG_MODE) {
+                console.log(`[VCP Stream Loop] Archery 调用发现 ${archeryErrorContents.length} 个错误，需要通知 AI`);
+              }
+              
+              // 将 AI 的当前响应加入历史
+              let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+              if (enableRoleDivider && enableRoleDividerInLoop) {
+                assistantMessages = roleDivider.process(assistantMessages, {
+                  ignoreList: roleDividerIgnoreList,
+                  switches: roleDividerSwitches,
+                  scanSwitches: roleDividerScanSwitches,
+                  removeDisabledTags: roleDividerRemoveDisabledTags,
+                  skipCount: 0
+                });
+              }
+              currentMessagesForLoop.push(...assistantMessages);
+              
+              // 添加错误信息作为用户消息
+              const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
+              currentMessagesForLoop.push({ role: 'user', content: errorPayload });
+              
+              // 发送分隔符
+              if (!res.writableEnded) {
+                const sepChunk = {
+                  id: `chatcmpl-VCP-separator-${Date.now()}`,
+                  object: 'chat.completion.chunk',
+                  created: Math.floor(Date.now() / 1000),
+                  model: originalBody.model,
+                  choices: [{ index: 0, delta: { content: '\n' }, finish_reason: null }],
+                };
+                res.write(`data: ${JSON.stringify(sepChunk)}\n\n`);
+              }
+              
+              // 请求 AI 继续响应
+              const nextAiAPIResponse = await fetchWithRetry(
+                `${apiUrl}/v1/chat/completions`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${apiKey}`,
+                    ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                    Accept: 'text/event-stream',
+                  },
+                  body: JSON.stringify({ ...originalBody, messages: currentMessagesForLoop, stream: true }),
+                  signal: abortController.signal,
+                },
+                { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
+              );
+              
+              if (nextAiAPIResponse.ok) {
+                let nextAIResponseData = await processAIResponseStreamHelper(nextAiAPIResponse, false);
+                currentAIContentForLoop = nextAIResponseData.content;
+                handleDiaryFromAIResponse(nextAIResponseData.raw).catch(e =>
+                  console.error('[VCP Stream Loop] Error in diary handling for archery error:', e)
+                );
+                recursionDepth++;
+                continue; // 继续循环检查是否有更多工具调用
+              }
+            }
+
             if (DEBUG_MODE)
-              console.log('[VCP Stream Loop] Only archery calls were found. Sending final signals and exiting loop.');
+              console.log('[VCP Stream Loop] Only archery calls were found (no errors). Sending final signals and exiting loop.');
             if (!res.writableEnded) {
               const finalChunkPayload = {
                 id: `chatcmpl-VCP-final-stop-${Date.now()}`,
@@ -1153,6 +1324,15 @@ class ChatCompletionHandler {
 
           const toolResults = await Promise.all(toolExecutionPromises);
           const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
+
+          // 如果有 archery 错误，合并到结果中
+          if (archeryErrorContents.length > 0) {
+            combinedToolResultsForAI.push(...archeryErrorContents);
+            if (DEBUG_MODE) {
+              console.log(`[VCP Stream Loop] 合并 ${archeryErrorContents.length} 个 archery 错误到工具结果中`);
+            }
+          }
+
           await writeDebugLog('LogToolResultForAI-Stream', { role: 'user', content: combinedToolResultsForAI });
           
           // V4.0: Create a unified tool payload with a hidden marker
@@ -1389,104 +1569,174 @@ class ChatCompletionHandler {
             const archeryCalls = toolCallsInThisAIResponse.filter(tc => tc.archery);
             const normalCalls = toolCallsInThisAIResponse.filter(tc => !tc.archery);
 
-            // Execute archery calls without waiting for results to be sent back to the AI
-            archeryCalls.forEach(toolCall => {
+            // Execute archery calls - 收集错误信息
+            const archeryErrorContents = [];
+
+            await Promise.all(archeryCalls.map(async toolCall => {
               if (DEBUG_MODE)
                 console.log(
-                  `[Multi-Tool] Executing ARCHERY tool call (no reply): ${toolCall.name} with args:`,
+                  `[Multi-Tool] Executing ARCHERY tool call: ${toolCall.name} with args:`,
                   toolCall.args,
                 );
-              // Fire-and-forget execution, but handle logging and notifications in then/catch
-              pluginManager
-                .processToolCall(toolCall.name, toolCall.args, clientIp)
-                .then(async pluginResult => {
-                  await writeDebugLog(`VCP-NonStream-Archery-Result-${toolCall.name}`, {
-                    args: toolCall.args,
-                    result: pluginResult,
-                  });
-                  const toolResultText =
-                    pluginResult !== undefined && pluginResult !== null
-                      ? typeof pluginResult === 'object'
-                        ? JSON.stringify(pluginResult, null, 2)
-                        : String(pluginResult)
-                      : `插件 ${toolCall.name} 执行完毕，但没有返回明确内容。`;
-                  // Archery调用的WebSocket通知应该始终发送，不受中止状态影响
-                  webSocketServer.broadcast(
-                    {
-                      type: 'vcp_log',
-                      data: {
-                        tool_name: toolCall.name,
-                        status: 'success',
-                        content: toolResultText,
-                        source: 'non_stream_loop_archery',
-                      },
-                    },
-                    'VCPLog',
-                  );
-                  const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
-                  if (
-                    pluginManifestNonStream &&
-                    pluginManifestNonStream.webSocketPush &&
-                    pluginManifestNonStream.webSocketPush.enabled
-                  ) {
-                    const wsPushMessageNonStream = {
-                      type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
-                      data: pluginResult,
-                    };
-                    webSocketServer.broadcast(
-                      wsPushMessageNonStream,
-                      pluginManifestNonStream.webSocketPush.targetClientType || null,
-                    );
-                  }
-                  // VCP信息收集不涉及HTTP流写入，但仍需检查中止状态以避免污染响应
-                  if (shouldShowVCP) {
-                    const vcpText = vcpInfoHandler.streamVcpInfo(
-                      null,
-                      originalBody.model,
-                      toolCall.name,
-                      'success',
-                      pluginResult,
-                      abortController,
-                    );
-                    if (vcpText) conversationHistoryForClient.push(vcpText);
-                  }
-                })
-                .catch(pluginError => {
-                  console.error(
-                    `[Multi-Tool ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`,
-                    pluginError.message,
-                  );
-                  const toolResultText = `执行插件 ${toolCall.name} 时发生错误：${pluginError.message || '未知错误'}`;
-                  // Archery调用的WebSocket通知应该始终发送
-                  webSocketServer.broadcast(
-                    {
-                      type: 'vcp_log',
-                      data: {
-                        tool_name: toolCall.name,
-                        status: 'error',
-                        content: toolResultText,
-                        source: 'non_stream_loop_archery_error',
-                      },
-                    },
-                    'VCPLog',
-                  );
-                  // VCP信息收集不涉及HTTP流写入，但仍需检查中止状态
-                  if (shouldShowVCP) {
-                    const vcpText = vcpInfoHandler.streamVcpInfo(
-                      null,
-                      originalBody.model,
-                      toolCall.name,
-                      'error',
-                      toolResultText,
-                      abortController,
-                    );
-                    if (vcpText) conversationHistoryForClient.push(vcpText);
-                  }
+              
+              let isError = false;
+              let errorMessage = '';
+              
+              try {
+                const pluginResult = await pluginManager.processToolCall(toolCall.name, toolCall.args, clientIp);
+                await writeDebugLog(`VCP-NonStream-Archery-Result-${toolCall.name}`, {
+                  args: toolCall.args,
+                  result: pluginResult,
                 });
-            });
+                
+                const toolResultText = formatToolResult(pluginResult);
+                
+                // 检测是否为错误结果
+                isError = isToolResultError(pluginResult);
+                if (isError) {
+                  errorMessage = toolResultText;
+                }
+                
+                // WebSocket 通知
+                webSocketServer.broadcast(
+                  {
+                    type: 'vcp_log',
+                    data: {
+                      tool_name: toolCall.name,
+                      status: isError ? 'error' : 'success',
+                      content: toolResultText,
+                      source: 'non_stream_loop_archery',
+                    },
+                  },
+                  'VCPLog',
+                );
+                
+                const pluginManifestNonStream = pluginManager.getPlugin(toolCall.name);
+                if (
+                  pluginManifestNonStream &&
+                  pluginManifestNonStream.webSocketPush &&
+                  pluginManifestNonStream.webSocketPush.enabled
+                ) {
+                  const wsPushMessageNonStream = {
+                    type: pluginManifestNonStream.webSocketPush.messageType || `vcp_tool_result_${toolCall.name}`,
+                    data: pluginResult,
+                  };
+                  webSocketServer.broadcast(
+                    wsPushMessageNonStream,
+                    pluginManifestNonStream.webSocketPush.targetClientType || null,
+                  );
+                }
+                
+                // 对于 archery 调用，仅在错误时输出 VCP 信息到对话中
+                if (shouldShowVCP && isError) {
+                  const vcpText = vcpInfoHandler.streamVcpInfo(
+                    null,
+                    originalBody.model,
+                    toolCall.name,
+                    'error',
+                    pluginResult,
+                    abortController,
+                  );
+                  if (vcpText) conversationHistoryForClient.push(vcpText);
+                }
+                
+              } catch (pluginError) {
+                console.error(
+                  `[Multi-Tool ARCHERY EXECUTION ERROR] Error executing plugin ${toolCall.name}:`,
+                  pluginError.message,
+                );
+                isError = true;
+                errorMessage = `执行异常：${pluginError.message || '未知错误'}`;
+                
+                webSocketServer.broadcast(
+                  {
+                    type: 'vcp_log',
+                    data: {
+                      tool_name: toolCall.name,
+                      status: 'error',
+                      content: errorMessage,
+                      source: 'non_stream_loop_archery_error',
+                    },
+                  },
+                  'VCPLog',
+                );
+                
+                if (shouldShowVCP) {
+                  const vcpText = vcpInfoHandler.streamVcpInfo(
+                    null,
+                    originalBody.model,
+                    toolCall.name,
+                    'error',
+                    errorMessage,
+                    abortController,
+                  );
+                  if (vcpText) conversationHistoryForClient.push(vcpText);
+                }
+              }
+              
+              // 收集错误
+              if (isError) {
+                archeryErrorContents.push({
+                  type: 'text',
+                  text: `[异步工具 "${toolCall.name}" 返回了错误，请注意]:\n${errorMessage}`
+                });
+              }
+            }));
 
-            // If there are no normal calls to wait for, the AI's turn is over.
+            // 处理纯 archery 错误的情况
             if (normalCalls.length === 0) {
+              if (archeryErrorContents.length > 0) {
+                // 有错误需要通知 AI
+                if (DEBUG_MODE) {
+                  console.log(`[Multi-Tool] Archery 调用发现 ${archeryErrorContents.length} 个错误，需要通知 AI`);
+                }
+                
+                let assistantMessages = [{ role: 'assistant', content: currentAIContentForLoop }];
+                if (enableRoleDivider && enableRoleDividerInLoop) {
+                  assistantMessages = roleDivider.process(assistantMessages, {
+                    ignoreList: roleDividerIgnoreList,
+                    switches: roleDividerSwitches,
+                    scanSwitches: roleDividerScanSwitches,
+                    removeDisabledTags: roleDividerRemoveDisabledTags,
+                    skipCount: 0
+                  });
+                }
+                currentMessagesForNonStreamLoop.push(...assistantMessages);
+                
+                const errorPayload = `<!-- VCP_TOOL_PAYLOAD -->\n${JSON.stringify(archeryErrorContents)}`;
+                currentMessagesForNonStreamLoop.push({ role: 'user', content: errorPayload });
+                
+                const recursionAiResponse = await fetchWithRetry(
+                  `${apiUrl}/v1/chat/completions`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      Authorization: `Bearer ${apiKey}`,
+                      ...(req.headers['user-agent'] && { 'User-Agent': req.headers['user-agent'] }),
+                      Accept: 'application/json',
+                    },
+                    body: JSON.stringify({ ...originalBody, messages: currentMessagesForNonStreamLoop, stream: false }),
+                    signal: abortController.signal,
+                  },
+                  { retries: apiRetries, delay: apiRetryDelay, debugMode: DEBUG_MODE }
+                );
+                
+                if (recursionAiResponse.ok) {
+                  const recursionArrayBuffer = await recursionAiResponse.arrayBuffer();
+                  const recursionBuffer = Buffer.from(recursionArrayBuffer);
+                  const recursionText = recursionBuffer.toString('utf-8');
+                  try {
+                    const recursionJson = JSON.parse(recursionText);
+                    currentAIContentForLoop = '\n' + (recursionJson.choices?.[0]?.message?.content || '');
+                  } catch (e) {
+                    currentAIContentForLoop = '\n' + recursionText;
+                  }
+                  recursionDepth++;
+                  continue;
+                }
+              }
+              
               if (DEBUG_MODE) console.log('[Multi-Tool] Only archery calls were found. Exiting loop.');
               break; // Exit the do-while loop
             }
@@ -1721,6 +1971,12 @@ class ChatCompletionHandler {
             const toolResults = await Promise.all(toolExecutionPromises);
 
             const combinedToolResultsForAI = toolResults.flat(); // Flatten the array of content arrays
+            
+            // 有 normal 调用时，合并错误
+            if (archeryErrorContents.length > 0) {
+              combinedToolResultsForAI.push(...archeryErrorContents);
+            }
+
             await writeDebugLog('LogToolResultForAI-NonStream', { role: 'user', content: combinedToolResultsForAI });
             
             // V4.0: Create a unified tool payload with a hidden marker
