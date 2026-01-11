@@ -690,8 +690,11 @@ class ChatCompletionHandler {
         if (requestData) {
           // 修复 Bug #4: 只有在未被 interrupt 路由中止时才执行清理
           // 优化清理逻辑：只有在请求未正常结束且未被中止时才调用 abort
+          // 🟢 修复：不再在 finally 块中盲目 abort
+          // 只有在客户端连接已断开（res.destroyed）且请求未正常结束时才中止上游
+          // 这防止了在模型输出异常（如潜空间坍缩）导致处理逻辑快速结束时，服务器误杀上游连接
           if (!requestData.aborted && requestData.abortController && !requestData.abortController.signal.aborted) {
-            if (!res.writableEnded) {
+            if (res.destroyed && !res.writableEnded) {
               requestData.aborted = true;
               requestData.abortController.abort();
             }
