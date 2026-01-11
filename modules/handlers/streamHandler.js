@@ -76,7 +76,8 @@ class StreamHandler {
           sseLineBuffer += chunkString;
 
           // 按行处理：既保证了转发的实时性，又解决了 [DONE] 跨包截断的问题
-          let lines = sseLineBuffer.split('\n');
+          // 使用更健壮的正则拆分，处理 \r\n, \n, \r (SSE 规范允许这三种换行符)
+          let lines = sseLineBuffer.split(/\r\n|\r|\n/);
           sseLineBuffer = lines.pop(); // 最后一项可能是截断的，留到下一轮
 
           for (const line of lines) {
@@ -86,8 +87,9 @@ class StreamHandler {
             if (!res.writableEnded && !res.destroyed) {
               // 必须保留空行，因为 SSE 依靠空行 (\n\n) 来分隔消息块
               // 如果丢失空行，多个 data: 块会被合并，导致前端解析 JSON 失败
-              if (trimmedLine !== 'data: [DONE]') {
+              if (trimmedLine !== 'data: [DONE]' && trimmedLine !== 'data:[DONE]') {
                 try {
+                  // 统一使用 \n 作为换行符转发，确保前端解析正常
                   res.write(line + '\n');
                 } catch (writeError) {
                   streamAborted = true;
@@ -119,18 +121,27 @@ class StreamHandler {
             sseLineBuffer += remainingString;
           }
           
-          // 处理最后剩余的 buffer
-          if (sseLineBuffer.startsWith('data: ')) {
-            const jsonData = sseLineBuffer.substring(6).trim();
-            if (jsonData && jsonData !== '[DONE]') {
+          // 处理最后剩余的 buffer 并转发
+          if (sseLineBuffer.length > 0) {
+            const trimmedLine = sseLineBuffer.trim();
+            if (!res.writableEnded && !res.destroyed && trimmedLine !== 'data: [DONE]' && trimmedLine !== 'data:[DONE]') {
               try {
-                const parsedData = JSON.parse(jsonData);
-                const delta = parsedData.choices?.[0]?.delta;
-                if (delta) {
-                  if (delta.content) collectedContentThisTurn += delta.content;
-                  if (delta.reasoning_content) collectedContentThisTurn += delta.reasoning_content;
-                }
+                res.write(sseLineBuffer + '\n');
               } catch (e) {}
+            }
+
+            if (trimmedLine.startsWith('data: ')) {
+              const jsonData = trimmedLine.substring(6).trim();
+              if (jsonData && jsonData !== '[DONE]') {
+                try {
+                  const parsedData = JSON.parse(jsonData);
+                  const delta = parsedData.choices?.[0]?.delta;
+                  if (delta) {
+                    if (delta.content) collectedContentThisTurn += delta.content;
+                    if (delta.reasoning_content) collectedContentThisTurn += delta.reasoning_content;
+                  }
+                } catch (e) {}
+              }
             }
           }
 
