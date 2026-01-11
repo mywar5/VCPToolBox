@@ -84,7 +84,9 @@ class StreamHandler {
             
             // 1. 转发逻辑：只要不是 [DONE] 就立即转发
             if (!res.writableEnded && !res.destroyed) {
-              if (trimmedLine !== 'data: [DONE]' && line.length > 0) {
+              // 必须保留空行，因为 SSE 依靠空行 (\n\n) 来分隔消息块
+              // 如果丢失空行，多个 data: 块会被合并，导致前端解析 JSON 失败
+              if (trimmedLine !== 'data: [DONE]') {
                 try {
                   res.write(line + '\n');
                 } catch (writeError) {
