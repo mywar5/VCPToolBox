@@ -101,7 +101,7 @@ class LightMemoPlugin {
 
     initialize(config, dependencies) {
         this.projectBasePath = config.PROJECT_BASE_PATH || path.join(__dirname, '..', '..');
-        this.dailyNoteRootPath = path.join(this.projectBasePath, 'dailynote');
+        this.dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(this.projectBasePath, 'dailynote');
         
         if (dependencies.vectorDBManager) {
             this.vectorDBManager = dependencies.vectorDBManager;

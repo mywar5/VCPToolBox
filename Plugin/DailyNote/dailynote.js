@@ -10,7 +10,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '..', 'config.env') 
 // --- Configuration ---
 const DEBUG_MODE = (process.env.DebugMode || "false").toLowerCase() === "true";
 const projectBasePath = process.env.PROJECT_BASE_PATH;
-const dailyNoteRootPath = projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote');
+const dailyNoteRootPath = process.env.KNOWLEDGEBASE_ROOT_PATH || (projectBasePath ? path.join(projectBasePath, 'dailynote') : path.join(__dirname, '..', '..', 'dailynote'));
 
 // Config for 'create' command
 const CONFIGURED_EXTENSION = (process.env.DAILY_NOTE_EXTENSION || "txt").toLowerCase() === "md" ? "md" : "txt";
