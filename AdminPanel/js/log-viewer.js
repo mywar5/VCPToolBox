@@ -46,6 +46,7 @@ class IncrementalLogViewer {
             path: document.getElementById('server-log-path-display'),
             filter: document.getElementById('server-log-filter'),
             copyBtn: document.getElementById('copy-server-log-button'),
+            clearBtn: document.getElementById('clear-server-log-button'),
             lineCount: document.getElementById('server-log-line-count'),
         };
     }
@@ -67,15 +68,50 @@ class IncrementalLogViewer {
     }
 
     /**
+     * 清空服务器日志文件
+     */
+    async clearLog() {
+        if (!confirm('确定要清空服务器日志文件吗？此操作不可撤销。')) {
+            return;
+        }
+
+        try {
+            this.showStatus('正在清空日志...', 'info');
+            const result = await apiFetch(`${API_BASE_URL}/server-log/clear`, {
+                method: 'POST'
+            });
+
+            if (result.success) {
+                this.reset();
+                this.renderLog();
+                this.showStatus('日志已清空', 'success');
+                showMessage('服务器日志已清空', 'success');
+            } else {
+                throw new Error(result.error || '未知错误');
+            }
+        } catch (error) {
+            console.error('清空日志失败:', error);
+            this.showStatus(`清空失败: ${error.message}`, 'error');
+            showMessage(`清空日志失败: ${error.message}`, 'error');
+        }
+    }
+
+    /**
      * 设置事件监听器
      */
     setupEventListeners() {
-        const { content, filter, copyBtn } = this.elements;
+        const { content, filter, copyBtn, clearBtn } = this.elements;
 
         // 复制按钮
         if (copyBtn && !copyBtn.dataset.listenerAttached) {
             copyBtn.addEventListener('click', () => this.copyToClipboard());
             copyBtn.dataset.listenerAttached = 'true';
+        }
+
+        // 清空按钮
+        if (clearBtn && !clearBtn.dataset.listenerAttached) {
+            clearBtn.addEventListener('click', () => this.clearLog());
+            clearBtn.dataset.listenerAttached = 'true';
         }
 
         // 过滤输入（防抖）

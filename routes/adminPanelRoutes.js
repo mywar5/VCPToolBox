@@ -242,6 +242,27 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             }
         }
     });
+
+    // 清空日志文件
+    adminApiRouter.post('/server-log/clear', async (req, res) => {
+        const logPath = getCurrentServerLogPath();
+        if (!logPath) {
+            return res.status(503).json({ error: 'Server log path not available.' });
+        }
+        try {
+            // 使用 truncate 清空文件内容
+            await fs.writeFile(logPath, '', 'utf-8');
+            
+            // 更新 inode 记录，防止增量读取出错
+            const stats = await fs.stat(logPath);
+            logFileInodes.set(logPath, stats.ino);
+
+            res.json({ success: true, message: '日志已清空' });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes API] Error clearing server log file ${logPath}:`, error);
+            res.status(500).json({ error: 'Failed to clear server log file', details: error.message });
+        }
+    });
     // --- End Server Log API ---
     // GET main config.env content (filtered)
     adminApiRouter.get('/config/main', async (req, res) => {

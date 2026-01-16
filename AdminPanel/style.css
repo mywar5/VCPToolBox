@@ -3044,4 +3044,17 @@ html[data-theme='light'] .delete-theme-btn {
         order: 5;
         width: 100%;
     }
+
+    /* 高级变量编辑器输入框移动端高度调整 */
+    #tvs-files-editor-section.active-section {
+        height: calc(100vh - 120px) !important; /* 减去顶部栏和一些边距 */
+        display: flex;
+        flex-direction: column;
+    }
+
+    #tvs-file-content-editor {
+        flex-grow: 1 !important;
+        height: auto !important;
+        min-height: 60vh !important;
+    }
 }
