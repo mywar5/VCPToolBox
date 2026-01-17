@@ -569,7 +569,7 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 🌟 TagMemo V3 + EPA + Residual Pyramid 增强版
+     * 🌟 TagMemo V3.7 + EPA + Residual Pyramid + Worldview Gating 增强版
      */
     _applyTagBoostV3(vector, baseTagBoost) {
         const debug = true;
@@ -577,11 +577,12 @@ class KnowledgeBaseManager {
         const dim = originalFloat32.length;
 
         try {
-            // [1] EPA 分析 (逻辑深度与共振)
+            // [1] EPA 分析 (逻辑深度与共振) - 识别“你在哪个世界”
             const epaResult = this.epa.project(originalFloat32);
             const resonance = this.epa.detectCrossDomainResonance(originalFloat32);
+            const queryWorld = epaResult.dominantAxes[0]?.label || 'Unknown';
 
-            // [2] 残差金字塔分析 (新颖度与覆盖率)
+            // [2] 残差金字塔分析 (新颖度与覆盖率) - 90% 能量截断
             const pyramid = this.residualPyramid.analyze(originalFloat32);
             const features = pyramid.features;
 
@@ -597,19 +598,69 @@ class KnowledgeBaseManager {
             const effectiveTagBoost = baseTagBoost * Math.min(2.0, Math.max(0.3, dynamicBoostFactor));
             
             if (debug) {
-                console.log(`[TagMemo-V3] Depth=${logicDepth.toFixed(3)}, Entropy=${entropyPenalty.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
-                console.log(`[TagMemo-V3] Coverage=${features.coverage.toFixed(3)}, Novelty=${features.novelty.toFixed(3)}, Activation=${features.tagMemoActivation.toFixed(3)}`);
-                console.log(`[TagMemo-V3] Effective Boost: ${effectiveTagBoost.toFixed(3)}`);
+                console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
+                console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplained * 100).toFixed(1)}%`);
+                console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}`);
             }
 
-            // [4] 收集金字塔中的所有 Tags 进行增强
+            // [4] 收集金字塔中的所有 Tags 并应用“世界观门控”与“语言补偿”
             const allTags = [];
+            const seenTagIds = new Set();
+            
             pyramid.levels.forEach(level => {
                 level.tags.forEach(t => {
+                    if (seenTagIds.has(t.id)) return;
+                    
+                    // A. 语言置信度补偿 (Language Confidence Gating)
+                    // 如果是纯英文技术词汇且当前不是技术语境，引入惩罚
+                    let langPenalty = 1.0;
+                    const isTechnicalNoise = /^[A-Za-z0-9\-_.]+$/.test(t.name) && t.name.length > 3;
+                    if (isTechnicalNoise && queryWorld !== 'Unknown' && !/^[A-Za-z0-9\-_.]+$/.test(queryWorld)) {
+                        langPenalty = 0.3; // 强烈压制跨界技术噪音
+                    }
+
+                    // B. 世界观门控 (Worldview Gating)
+                    // 简单实现：如果 Tag 本身有向量，检查其与查询世界的正交性
+                    // 这里暂用 layerDecay 代替复杂的实时投影以保证性能
                     const layerDecay = Math.pow(0.7, level.level);
-                    allTags.push({ ...t, adjustedWeight: t.weight * layerDecay });
+                    
+                    allTags.push({
+                        ...t,
+                        adjustedWeight: t.weight * layerDecay * langPenalty
+                    });
+                    seenTagIds.add(t.id);
                 });
             });
+
+            // [4.5] 逻辑分支拉回 (Logic Pull-back)
+            // 利用共现矩阵拉回与第一梯队 Tag 强相关的逻辑词
+            if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
+                const topTags = allTags.slice(0, 3);
+                topTags.forEach(parentTag => {
+                    const related = this.tagCooccurrenceMatrix.get(parentTag.id);
+                    if (related) {
+                        // 找回前 2 个最相关的关联词
+                        const sortedRelated = Array.from(related.entries())
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 2);
+                            
+                        sortedRelated.forEach(([relId, weight]) => {
+                            if (!seenTagIds.has(relId)) {
+                                const relTagRow = this.db.prepare("SELECT name, vector FROM tags WHERE id = ?").get(relId);
+                                if (relTagRow) {
+                                    allTags.push({
+                                        id: relId,
+                                        name: relTagRow.name,
+                                        adjustedWeight: parentTag.adjustedWeight * 0.5, // 关联词权重减半
+                                        isPullback: true
+                                    });
+                                    seenTagIds.add(relId);
+                                }
+                            }
+                        });
+                    }
+                });
+            }
 
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 

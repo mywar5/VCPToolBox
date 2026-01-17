@@ -32,6 +32,7 @@ class ContextVectorManager {
         // 复用插件的清理逻辑
         let cleaned = this.plugin._stripHtml(text);
         cleaned = this.plugin._stripEmoji(cleaned);
+        cleaned = this.plugin._stripToolMarkers(cleaned); // ✅ 新增：同步净化工具调用噪音
         // 移除多余空格、换行，转小写
         return cleaned.toLowerCase()
             .replace(/\s+/g, ' ')
