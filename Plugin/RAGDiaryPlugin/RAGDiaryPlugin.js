@@ -9,6 +9,7 @@ const cheerio = require('cheerio'); // <--- 新增：用于解析和清理HTML
 const TIME_EXPRESSIONS = require('./timeExpressions.config.js');
 const SemanticGroupManager = require('./SemanticGroupManager.js');
 const AIMemoHandler = require('./AIMemoHandler.js'); // <--- 新增：引入AIMemoHandler
+const ContextVectorManager = require('./ContextVectorManager.js'); // <--- 新增：引入上下文向量管理器
 const { chunkText } = require('../../TextChunker.js'); // <--- 新增：引入文本分块器
 
 const dayjs = require('dayjs');
@@ -242,6 +243,7 @@ class RAGDiaryPlugin {
         this.enhancedVectorCache = {}; // <--- 新增：用于存储增强向量的缓存
         this.timeParser = new TimeExpressionParser('zh-CN'); // 实例化时间解析器
         this.semanticGroups = new SemanticGroupManager(this); // 实例化语义组管理器
+        this.contextVectorManager = new ContextVectorManager(this); // <--- 新增：实例化上下文向量管理器
         this.metaThinkingChains = {}; // 新增：元思考链配置
         this.metaChainThemeVectors = {}; // 新增：元思考链主题向量缓存
         this.aiMemoHandler = null; // <--- 延迟初始化，在 loadConfig 之后
@@ -636,39 +638,71 @@ class RAGDiaryPlugin {
         return characterDiaryContent;
     }
 
+    _sigmoid(x) {
+        return 1 / (1 + Math.exp(-x));
+    }
+
+    /**
+     * V3 动态参数计算：结合逻辑深度 (L)、共振 (R) 和语义宽度 (S)
+     */
+    async _calculateDynamicParams(queryVector, userText, aiText) {
+        // 1. 基础 K 值计算 (基于文本长度)
+        const userLen = userText ? userText.length : 0;
+        let k_base = 3;
+        if (userLen > 100) k_base = 6;
+        else if (userLen > 30) k_base = 4;
+
+        if (aiText) {
+            const tokens = aiText.match(/[a-zA-Z0-9]+|[^\s\x00-\xff]/g) || [];
+            const uniqueTokens = new Set(tokens).size;
+            if (uniqueTokens > 100) k_base = Math.max(k_base, 6);
+            else if (uniqueTokens > 40) k_base = Math.max(k_base, 4);
+        }
+
+        // 2. 获取 EPA 指标 (L, R)
+        const epa = await this.vectorDBManager.getEPAAnalysis(queryVector);
+        const L = epa.logicDepth;
+        const R = epa.resonance;
+        
+        // 3. 获取语义宽度 (S)
+        const S = this.contextVectorManager.computeSemanticWidth(queryVector);
+
+        // 4. 计算动态 Beta (TagWeight)
+        // β = σ(L · log(1 + R) - S · noise_penalty)
+        const noise_penalty = 0.05;
+        const betaInput = L * Math.log(1 + R + 1) - S * noise_penalty;
+        const beta = this._sigmoid(betaInput);
+        
+        // 将 beta 映射到合理的 RAG 权重范围，例如 [0.05, 0.45]，默认基准 0.15
+        const finalTagWeight = 0.05 + beta * 0.4;
+
+        // 5. 计算动态 K
+        // 逻辑越深(L)且共振越强(R)，说明信息量越大，需要更高的 K 来覆盖
+        const kAdjustment = Math.round(L * 3 + Math.log1p(R) * 2);
+        const finalK = Math.max(3, Math.min(10, k_base + kAdjustment));
+
+        console.log(`[RAGDiaryPlugin][V3] L=${L.toFixed(3)}, R=${R.toFixed(3)}, S=${S.toFixed(3)} => Beta=${beta.toFixed(3)}, TagWeight=${finalTagWeight.toFixed(3)}, K=${finalK}`);
+        
+        return {
+            k: finalK,
+            tagWeight: finalTagWeight,
+            metrics: { L, R, S, beta }
+        };
+    }
+
+    // 保留旧方法作为回退或基础参考
     _calculateDynamicK(userText, aiText = null) {
-        // 1. 根据用户输入的长度计算 k_user
         const userLen = userText ? userText.length : 0;
         let k_user = 3;
-        if (userLen > 100) {
-            k_user = 7;
-        } else if (userLen > 30) {
-            k_user = 5;
-        }
-
-        // 如果没有 aiText (通常是首轮对话)，直接返回 k_user
-        if (!aiText) {
-            console.log(`[RAGDiaryPlugin] User-only turn. User query length (${userLen}), setting k=${k_user}.`);
-            return k_user;
-        }
-
-        // 2. 根据 AI 回复的不重复【词元】数计算 k_ai，以更准确地衡量信息密度
-        //    这个正则表达式会匹配连续的英文单词/数字，或单个汉字/符号，能同时兼容中英文。
+        if (userLen > 100) k_user = 7;
+        else if (userLen > 30) k_user = 5;
+        if (!aiText) return k_user;
         const tokens = aiText.match(/[a-zA-Z0-9]+|[^\s\x00-\xff]/g) || [];
         const uniqueTokens = new Set(tokens).size;
-        
         let k_ai = 3;
-        if (uniqueTokens > 100) {      // 阈值: 高信息密度 (>100个不同词元)
-            k_ai = 7;
-        } else if (uniqueTokens > 40) { // 阈值: 中等信息密度 (>40个不同词元)
-            k_ai = 5;
-        }
-
-        // 3. 计算平均 k 值，并四舍五入
-        const finalK = Math.round((k_user + k_ai) / 2);
-        
-        console.log(`[RAGDiaryPlugin] User len (${userLen})->k_user=${k_user}. AI unique tokens (${uniqueTokens})->k_ai=${k_ai}. Final averaged k=${finalK}.`);
-        return finalK;
+        if (uniqueTokens > 100) k_ai = 7;
+        else if (uniqueTokens > 40) k_ai = 5;
+        return Math.round((k_user + k_ai) / 2);
     }
 
     _stripHtml(html) {
@@ -856,6 +890,9 @@ class RAGDiaryPlugin {
     // processMessages 是 messagePreprocessor 的标准接口
     async processMessages(messages, pluginConfig) {
         try {
+            // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
+            await this.contextVectorManager.updateContext(messages);
+
             // V3.0: 支持多system消息处理
             // 1. 识别所有需要处理的 system 消息（包括日记本、元思考和全局AIMemo开关）
             let isAIMemoLicensed = false; // <--- AIMemo许可证 [[AIMemo=True]] 检测标志
@@ -942,9 +979,23 @@ class RAGDiaryPlugin {
             const userVector = userContent ? await this.getSingleEmbeddingCached(userContent) : null;
             const aiVector = aiContent ? await this.getSingleEmbeddingCached(aiContent) : null;
 
+            // 🌟 V3 增强：使用衰减聚合向量
+            const aggregatedAiVector = this.contextVectorManager.aggregateContext('assistant');
+            const aggregatedUserVector = this.contextVectorManager.aggregateContext('user');
+
             let queryVector = null;
             if (aiVector && userVector) {
-                queryVector = this._getWeightedAverageVector([userVector, aiVector], [0.7, 0.3]);
+                // 结合当前意图与历史聚合意图
+                const currentIntent = this._getWeightedAverageVector([userVector, aiVector], [0.7, 0.3]);
+                if (aggregatedAiVector || aggregatedUserVector) {
+                    const historyIntent = this._getWeightedAverageVector(
+                        [aggregatedUserVector, aggregatedAiVector].filter(Boolean),
+                        [0.6, 0.4]
+                    );
+                    queryVector = this._getWeightedAverageVector([currentIntent, historyIntent], [0.8, 0.2]);
+                } else {
+                    queryVector = currentIntent;
+                }
             } else {
                 queryVector = userVector || aiVector;
             }
@@ -970,7 +1021,9 @@ class RAGDiaryPlugin {
                 return newMessages;
             }
             
-            const dynamicK = this._calculateDynamicK(userContent, aiContent);
+            // 🌟 V3 增强：计算动态参数 (K, TagWeight)
+            const dynamicParams = await this._calculateDynamicParams(queryVector, userContent, aiContent);
+            
             const combinedTextForTimeParsing = [userContent, aiContent].filter(Boolean).join('\n');
             const timeRanges = this.timeParser.parse(combinedTextForTimeParsing);
 
@@ -988,10 +1041,11 @@ class RAGDiaryPlugin {
                     userContent, // 传递 userContent 用于语义组和时间解析
                     aiContent, // 传递 aiContent 用于 AIMemo
                     combinedQueryForDisplay, // V3.5: 传递组合后的查询字符串用于广播
-                    dynamicK,
+                    dynamicParams.k,
                     timeRanges,
                     globalProcessedDiaries, // 传递全局 Set
-                    isAIMemoLicensed // 新增：AIMemo许可证
+                    isAIMemoLicensed, // 新增：AIMemo许可证
+                    dynamicParams.tagWeight // 🌟 传递动态 Tag 权重
                 );
                 
                 newMessages[index].content = processedContent;
@@ -1018,7 +1072,7 @@ class RAGDiaryPlugin {
     }
 
     // V3.0 新增: 处理单条 system 消息内容的辅助函数
-    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed) {
+    async _processSingleSystemMessage(content, queryVector, userContent, aiContent, combinedQueryForDisplay, dynamicK, timeRanges, processedDiaries, isAIMemoLicensed, dynamicTagWeight = 0.15) {
         if (!this.pushVcpInfo) {
             console.warn('[RAGDiaryPlugin] _processSingleSystemMessage: pushVcpInfo is null. Cannot broadcast RAG details.');
         }
@@ -1134,7 +1188,8 @@ class RAGDiaryPlugin {
                     try {
                         const retrievedContent = await this._processRAGPlaceholder({
                             dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
-                            dynamicK, timeRanges, allowTimeAndGroup: true
+                            dynamicK, timeRanges, allowTimeAndGroup: true,
+                            defaultTagWeight: dynamicTagWeight // 🌟 传入动态权重
                         });
                         return { placeholder, content: retrievedContent };
                     } catch (error) {
@@ -1266,7 +1321,8 @@ class RAGDiaryPlugin {
                             // ✅ 混合模式也传递TagMemo参数
                             const retrievedContent = await this._processRAGPlaceholder({
                                 dbName, modifiers, queryVector, userContent, aiContent, combinedQueryForDisplay,
-                                dynamicK, timeRanges, allowTimeAndGroup: true
+                                dynamicK, timeRanges, allowTimeAndGroup: true,
+                                defaultTagWeight: dynamicTagWeight // 🌟 传入动态权重
                             });
                             
                             // ✅ 缓存结果（RAG已在内部缓存，这里是额外保险）
@@ -1444,7 +1500,8 @@ class RAGDiaryPlugin {
             combinedQueryForDisplay,
             dynamicK,
             timeRanges,
-            allowTimeAndGroup = true
+            allowTimeAndGroup = true,
+            defaultTagWeight = 0.15 // 🌟 新增默认权重参数
         } = options;
 
         // 1️⃣ 生成缓存键
@@ -1479,7 +1536,8 @@ class RAGDiaryPlugin {
         
         // ✅ 新增：解析TagMemo修饰符和权重
         const tagMemoMatch = modifiers.match(/::TagMemo([\d.]+)/);
-        const tagWeight = tagMemoMatch ? parseFloat(tagMemoMatch[1]) : null;
+        // ✅ 改进：如果 modifiers 中没有指定权重，则使用动态计算的权重
+        let tagWeight = tagMemoMatch ? parseFloat(tagMemoMatch[1]) : (modifiers.includes('::TagMemo') ? defaultTagWeight : null);
         
         // TagMemo修饰符检测（静默）
 
