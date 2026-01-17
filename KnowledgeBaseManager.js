@@ -47,6 +47,10 @@ class KnowledgeBaseManager {
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
             tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
             fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
+            // 语言置信度补偿配置
+            langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
+            langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            langPenaltyCrossDomain: parseFloat(process.env.LANG_PENALTY_CROSS_DOMAIN) || 0.1,
             ...config
         };
 
@@ -614,9 +618,15 @@ class KnowledgeBaseManager {
                     // A. 语言置信度补偿 (Language Confidence Gating)
                     // 如果是纯英文技术词汇且当前不是技术语境，引入惩罚
                     let langPenalty = 1.0;
-                    const isTechnicalNoise = /^[A-Za-z0-9\-_.]+$/.test(t.name) && t.name.length > 3;
-                    if (isTechnicalNoise && queryWorld !== 'Unknown' && !/^[A-Za-z0-9\-_.]+$/.test(queryWorld)) {
-                        langPenalty = 0.3; // 强烈压制跨界技术噪音
+                    if (this.config.langConfidenceEnabled) {
+                        // 扩展技术噪音检测：非中文且符合技术命名特征（允许空格以覆盖如 Dadroit JSON Viewer）
+                        const isTechnicalNoise = !/[\u4e00-\u9fa5]/.test(t.name) && /^[A-Za-z0-9\-_.\s]+$/.test(t.name) && t.name.length > 3;
+                        const isTechnicalWorld = queryWorld !== 'Unknown' && /^[A-Za-z0-9\-_.]+$/.test(queryWorld);
+                        
+                        if (isTechnicalNoise && !isTechnicalWorld) {
+                            // 如果世界观不明或明确非技术，则强烈压制英文技术词汇
+                            langPenalty = queryWorld === 'Unknown' ? this.config.langPenaltyUnknown : this.config.langPenaltyCrossDomain;
+                        }
                     }
 
                     // B. 世界观门控 (Worldview Gating)
@@ -704,7 +714,22 @@ class KnowledgeBaseManager {
             return {
                 vector: fused,
                 info: {
-                    matchedTags: allTags.map(t => t.name),
+                    // 仅返回权重足够高的 Tag，过滤掉被压制的噪音，提升召回纯净度
+                    // ⚠️ 修复：使用更精细的相对权重过滤，确保不误删有效标签
+                    matchedTags: (() => {
+                        if (allTags.length === 0) return [];
+                        const maxWeight = Math.max(...allTags.map(t => t.adjustedWeight));
+                        return allTags.filter(t => {
+                            // 检查是否为潜在技术噪音
+                            const isTech = !/[\u4e00-\u9fa5]/.test(t.name) && /^[A-Za-z0-9\-_.\s]+$/.test(t.name);
+                            if (isTech) {
+                                // 对技术噪音应用严格过滤（必须达到最大权重的 20%）
+                                return t.adjustedWeight > maxWeight * 0.2;
+                            }
+                            // 对非技术标签（中文等）保持宽容，只要达到最大权重的 5% 即可保留，防止丢失逻辑分镜
+                            return t.adjustedWeight > maxWeight * 0.05;
+                        }).map(t => t.name);
+                    })(),
                     boostFactor: effectiveTagBoost,
                     epa: { logicDepth, entropy: entropyPenalty, resonance: resonance.resonance },
                     pyramid: { coverage: features.coverage, novelty: features.novelty, depth: features.depth }
