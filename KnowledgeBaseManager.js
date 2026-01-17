@@ -756,8 +756,8 @@ class KnowledgeBaseManager {
      * @returns {{vector: Float32Array, info: object|null}} - 返回增强后的向量和调试信息
      */
     applyTagBoost(vector, tagBoost) {
-        // 包装私有方法，提供稳定的公共接口
-        return this._applyTagBoost(vector, tagBoost);
+        // 🚀 升级：默认使用 V3 增强算法，提供更深层的语义关联和噪音抑制
+        return this._applyTagBoostV3(vector, tagBoost);
     }
 
     /**

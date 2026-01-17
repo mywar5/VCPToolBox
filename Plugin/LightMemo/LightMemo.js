@@ -180,17 +180,23 @@ class LightMemoPlugin {
             return { ...candidate, bm25Score };
         });
 
-        // 取top K*3用于向量检索
-        const topByKeyword = scoredCandidates
-            .filter(c => c.bm25Score > 0)  // 必须有关键词匹配
+        // 🚀 优化：放宽 BM25 限制。如果 BM25 没搜到，可能是分词太碎或太死板，此时允许向量检索兜底。
+        let topByKeyword = scoredCandidates
+            .filter(c => c.bm25Score > 0)
             .sort((a, b) => b.bm25Score - a.bm25Score)
-            .slice(0, k * 3);
+            .slice(0, k * 5); // 增加候选数量
 
-        if (topByKeyword.length === 0) {
-            return `关于"${query}"，没有找到包含相关关键词的记忆片段。`;
+        // 如果关键词匹配太少，补充一些向量相似度高的（这里先取前 N 个作为兜底候选）
+        if (topByKeyword.length < k) {
+            console.log(`[LightMemo] BM25 results insufficient (${topByKeyword.length}), adding fallback candidates.`);
+            const existingIds = new Set(topByKeyword.map(c => c.label));
+            const fallbacks = scoredCandidates
+                .filter(c => !existingIds.has(c.label))
+                .slice(0, k * 2);
+            topByKeyword = [...topByKeyword, ...fallbacks];
         }
 
-        console.log(`[LightMemo] BM25 filtered to ${topByKeyword.length} chunks.`);
+        console.log(`[LightMemo] Candidate pool size: ${topByKeyword.length} chunks.`);
 
         // --- 第二阶段：向量精排 ---
         let queryVector = await this.getSingleEmbedding(query);
@@ -218,11 +224,21 @@ class LightMemoPlugin {
         );
 
         // 混合BM25和向量分数
-        const hybridScored = vectorScoredCandidates.map(c => ({
-            ...c,
-            hybridScore: c.bm25Score * 0.6 + c.vectorScore * 0.4,  // 提高关键词权重
-            tagBoostInfo: tagBoostInfo // 注入增强信息
-        })).sort((a, b) => b.hybridScore - a.hybridScore);
+        // 🚀 优化：动态调整权重。如果有 BM25 分数，则关键词权重高；如果没有，则全靠向量。
+        const hybridScored = vectorScoredCandidates.map(c => {
+            const hasBM25 = c.bm25Score > 0;
+            const bmWeight = hasBM25 ? 0.6 : 0.0;
+            const vecWeight = hasBM25 ? 0.4 : 1.0;
+            
+            // 归一化 BM25 分数以便混合 (简单处理：除以最大可能分数或当前最高分)
+            const normalizedBM25 = hasBM25 ? Math.min(1.0, c.bm25Score / 10) : 0;
+
+            return {
+                ...c,
+                hybridScore: normalizedBM25 * bmWeight + c.vectorScore * vecWeight,
+                tagBoostInfo: tagBoostInfo
+            };
+        }).sort((a, b) => b.hybridScore - a.hybridScore);
 
         // 取top K
         let finalResults = hybridScored.slice(0, k);
@@ -410,15 +426,12 @@ class LightMemoPlugin {
         if (!text) return [];
         
         // ✅ 使用实例调用 cut 方法
-        // 参数说明：
-        // - text: 要分词的文本
-        // - false: 不使用 HMM（隐藏马尔可夫模型），使用精确模式
         if (!this.jiebaInstance) {
             console.warn('[LightMemo] Jieba not initialized, falling back to simple split.');
             // 降级方案：简单分词
             return text.split(/\s+/)
                 .map(w => w.toLowerCase().trim())
-                .filter(w => w.length >= 2)
+                .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
                 .filter(w => !this.stopWords.has(w));
         }
         
@@ -426,7 +439,7 @@ class LightMemoPlugin {
         
         return words
             .map(w => w.toLowerCase().trim())
-            .filter(w => w.length >= 2)
+            .filter(w => w.length >= 1) // 允许单字，提高搜索召回率（特别是姓名）
             .filter(w => !this.stopWords.has(w))
             .filter(w => w.length > 0);
     }
@@ -445,51 +458,50 @@ class LightMemoPlugin {
         const targetFolders = folder ? folder.split(/[,，]/).map(f => f.trim()).filter(Boolean) : [];
         
         try {
-            // 联表查询：chunks + files
-            const sql = `
+            // 🚀 优化：使用 SQL 过滤减少 JS 端的处理压力
+            let sql = `
                 SELECT c.id, c.content, f.diary_name, f.path
                 FROM chunks c
                 JOIN files f ON c.file_id = f.id
+                WHERE 1=1
             `;
-            
+            const params = [];
+
+            // 1. 排除文件夹
+            if (this.excludedFolders.length > 0) {
+                sql += ` AND f.diary_name NOT IN (${this.excludedFolders.map(() => '?').join(',')})`;
+                params.push(...this.excludedFolders);
+            }
+            sql += ` AND f.diary_name NOT LIKE '已整理%' AND f.diary_name NOT LIKE '%簇'`;
+
+            // 2. 目标范围过滤
+            if (!searchAll) {
+                if (targetFolders.length > 0) {
+                    sql += ` AND (${targetFolders.map(() => "f.diary_name LIKE ?").join(" OR ")})`;
+                    targetFolders.forEach(f => params.push(`%${f}%`));
+                } else if (maid) {
+                    sql += ` AND f.diary_name LIKE ?`;
+                    params.push(`%${maid}%`);
+                }
+            }
+
             const stmt = db.prepare(sql);
             
-            // 流式遍历所有 chunks
-            for (const row of stmt.iterate()) {
-                const diaryName = row.diary_name;
-                
-                // 1. 文件夹/日记本过滤
-                if (diaryName.startsWith('已整理') || diaryName.endsWith('簇')) continue;
-                if (this.excludedFolders.includes(diaryName)) continue;
-                
-                // 2. 目标日记本过滤 (如果不是搜索全部)
-                if (!searchAll) {
-                    if (targetFolders.length > 0) {
-                        // 如果指定了文件夹，则必须匹配其中一个文件夹名称
-                        if (!targetFolders.some(f => diaryName.includes(f))) continue;
-                    } else if (maid) {
-                        // 如果没有指定文件夹，则按署名过滤日记本
-                        if (!diaryName.includes(maid)) continue;
-                    }
-                }
-                
+            // 流式遍历过滤后的 chunks
+            for (const row of stmt.iterate(...params)) {
                 const text = row.content || '';
                 
-                // 3. 署名过滤 (如果不是搜索全部)
-                if (!searchAll) {
-                    if (targetFolders.length > 0) {
-                        // 指定文件夹时忽略署名过滤
-                    } else if (maid) {
-                        if (!this._checkSignature(text, maid)) continue;
-                    }
+                // 3. 署名过滤 (如果不是搜索全部且没有指定文件夹)
+                if (!searchAll && targetFolders.length === 0 && maid) {
+                    if (!this._checkSignature(text, maid)) continue;
                 }
                 
-                // 4. 分词
+                // 4. 分词 (仅对通过初步过滤的进行分词)
                 const tokens = this._tokenize(text);
                 
                 candidates.push({
-                    dbName: diaryName,
-                    label: row.id, // 使用 chunk.id 作为 label
+                    dbName: row.diary_name,
+                    label: row.id,
                     text: text,
                     tokens: tokens,
                     sourceFile: row.path
