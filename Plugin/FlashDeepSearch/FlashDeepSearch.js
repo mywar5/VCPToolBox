@@ -21,12 +21,19 @@ const {
 const MAX_CONCURRENT_SEARCHES = parseInt(MaxSearchList, 10) || 5;
 const DEEP_SEARCH_MAX_TOKENS = parseInt(DeepSearchModelMaxToken, 10) || 60000;
 const GOOGLE_SEARCH_MAX_TOKENS = parseInt(GoogleSearchModelMaxToken, 10) || 50000;
-const FILE_SAVE_PATH = path.resolve(__dirname, '../../file/document');
+const FILE_SAVE_PATH = path.resolve(__dirname, '../../file/document/flashdeepsearch');
 
 // --- 2. 辅助函数 ---
 
-const logFilePath = path.join(__dirname, `log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
-const logStream = require('fs').createWriteStream(logFilePath, { flags: 'a' });
+const LOG_DIR = path.join(__dirname, 'log');
+// 同步创建日志目录（如果不存在）
+const fsSync = require('fs');
+if (!fsSync.existsSync(LOG_DIR)) {
+    fsSync.mkdirSync(LOG_DIR, { recursive: true });
+}
+
+const logFilePath = path.join(LOG_DIR, `log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
+const logStream = fsSync.createWriteStream(logFilePath, { flags: 'a' });
 
 const log = (message) => {
     const logMessage = `[FlashDeepSearch] ${new Date().toISOString()}: ${message}`;
@@ -45,9 +52,14 @@ const sendResponse = (data) => {
 };
 
 const callLanguageModel = async (model, messages, systemPrompt = null, maxTokens) => {
+    const now = new Date();
+    const timeStr = now.toLocaleString('zh-CN', { hour12: false });
+    const dayOfWeek = ['日', '一', '二', '三', '四', '五', '六'][now.getDay()];
+    const timeContext = `\n\n【当前时间信息】\n当前日期和时间：${timeStr} 星期${dayOfWeek}\n请在研究和回答中参考此时间的时效性。`;
+
     const payload = {
         model,
-        messages: systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages,
+        messages: systemPrompt ? [{ role: 'system', content: systemPrompt + timeContext }, ...messages] : messages,
         stream: false,
         max_tokens: maxTokens
     };
@@ -96,17 +108,34 @@ async function generateKeywords(topic, broadness) {
     const responseText = await callLanguageModel(DeepSearchModel, [{ role: 'user', content: userMessage }], systemPrompt, DEEP_SEARCH_MAX_TOKENS);
     log(`DeepSearchModel 原始响应: ${responseText}`);
     
-    // 兼容两种关键词格式: [keyword:] 或 [KeyWord1:] keyword
-    let keywords;
-    const newRegex = /\[([^\]:]+):\]/g; // 格式: [keyword:]
-    const newMatches = [...responseText.matchAll(newRegex)];
+    // 增强型关键词提取逻辑，兼容多种 LLM 输出格式
+    const keywordSet = new Set();
+    
+    // 模式 1: [KeyWord1: keyword] (本次报错的情况) 或 [KeyWord1: ] keyword
+    const pattern1 = /\[KeyWord\d+:\s*([^\]]+)\]/g;
+    [...responseText.matchAll(pattern1)].forEach(m => {
+        const kw = m[1].trim();
+        if (kw) keywordSet.add(kw);
+    });
 
-    if (newMatches.length > 0) {
-        keywords = newMatches.map(match => match[1].trim());
-    } else {
-        const oldRegex = /\[KeyWord\d*?:\s*\]([^\[\]]+)(?=\s*\[KeyWord\d*?:\]|$)/g; // 格式: [KeyWord1:] keyword
-        keywords = [...responseText.matchAll(oldRegex)].map(match => match[1].trim());
+    // 模式 2: [keyword:] (Prompt 要求的标准格式)
+    const pattern2 = /\[([^\]:]+):\]/g;
+    [...responseText.matchAll(pattern2)].forEach(m => {
+        const kw = m[1].trim();
+        // 排除掉 KeyWordX 这种标签本身
+        if (kw && !/^KeyWord\d+$/i.test(kw)) keywordSet.add(kw);
+    });
+
+    // 模式 3: [KeyWord1:] keyword (旧版格式，关键词在标签外)
+    if (keywordSet.size === 0) {
+        const pattern3 = /\[KeyWord\d*?:\s*\]\s*([^\[\]\n]+)(?=\s*\[KeyWord|\s*$)/g;
+        [...responseText.matchAll(pattern3)].forEach(m => {
+            const kw = m[1].trim();
+            if (kw) keywordSet.add(kw);
+        });
     }
+
+    const keywords = Array.from(keywordSet);
 
     if (keywords.length === 0) {
         throw new Error("未能从DeepSearchModel的响应中提取任何关键词。");
@@ -170,12 +199,18 @@ async function main(request) {
     log('插件启动，接收到请求。');
     const { SearchContent, SearchBroadness } = request;
 
-    if (!SearchContent || !SearchBroadness) {
-        return sendResponse({ status: "error", error: "请求缺少必需的参数: SearchContent 和 SearchBroadness。" });
+    if (!SearchContent) {
+        return sendResponse({ status: "error", error: "请求缺少必需的参数: SearchContent。" });
     }
-    const broadness = parseInt(SearchBroadness, 10);
-    if (isNaN(broadness) || broadness < 5 || broadness > 20) {
-        return sendResponse({ status: "error", error: "参数 SearchBroadness 必须是5到20之间的整数。" });
+
+    // 优化 SearchBroadness 参数：如果未提供或无效，默认为 5
+    let broadness = parseInt(SearchBroadness, 10);
+    if (isNaN(broadness)) {
+        log(`未提供有效的 SearchBroadness，使用默认值 5`);
+        broadness = 5;
+    } else if (broadness < 5 || broadness > 20) {
+        log(`SearchBroadness (${broadness}) 超出范围 (5-20)，已修正。`);
+        broadness = Math.max(5, Math.min(20, broadness));
     }
 
     log(`研究主题: "${SearchContent}", 搜索广度: ${broadness}`);

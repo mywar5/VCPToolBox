@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
 
-const FORUM_DIR = path.join(__dirname, '..', '..', 'dailynote', 'VCP论坛');
+const FORUM_DIR = process.env.KNOWLEDGEBASE_ROOT_PATH ? path.join(process.env.KNOWLEDGEBASE_ROOT_PATH, 'VCP论坛') : path.join(__dirname, '..', '..', 'dailynote', 'VCP论坛');
 const PROJECT_BASE_PATH = process.env.PROJECT_BASE_PATH;
 const SERVER_PORT = process.env.SERVER_PORT;
 const IMAGESERVER_IMAGE_KEY = process.env.IMAGESERVER_IMAGE_KEY;
@@ -232,11 +232,17 @@ async function convertImagesToBase64ForAI(content) {
  * @returns {Promise<object>} - The result of the operation.
  */
 async function createPost(args) {
-    const { maid, board, title, content: rawContent } = args;
+    let { maid, board, title, content: rawContent } = args;
     if (!maid || !board || !title || !rawContent) {
         throw new Error("创建帖子需要 'maid', 'board', 'title', 和 'content' 参数。");
     }
     let content = rawContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
+
+    // Clean title from AI hallucinations (extra brackets)
+    // If title starts with [[ and ends with ], remove one level of brackets from both ends
+    if (title && title.startsWith('[[') && title.endsWith(']')) {
+        title = title.slice(1, -1);
+    }
     
     // Process local images (file:// URLs)
     content = await processLocalImages(content, args);

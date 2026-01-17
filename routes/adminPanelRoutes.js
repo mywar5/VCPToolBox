@@ -10,10 +10,18 @@ const { getAuthCode } = require('../modules/captchaDecoder'); // 导入统一的
 // manifestFileName 和 blockedManifestExtension 是在插件路由中使用的常量
 const manifestFileName = 'plugin-manifest.json';
 const blockedManifestExtension = '.block';
-const AGENT_FILES_DIR = path.join(__dirname, '..', 'Agent'); // 定义 Agent 文件目录
 
-module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager) {
+// 记录每个日志文件的 inode，用于检测日志轮转
+const logFileInodes = new Map();
+
+module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurrentServerLogPath, vectorDBManager, agentDirPath) {
+    if (!agentDirPath || typeof agentDirPath !== 'string') {
+        throw new Error('[AdminPanelRoutes] agentDirPath must be a non-empty string');
+    }
+    
     const adminApiRouter = express.Router();
+    const AGENT_FILES_DIR = agentDirPath;
+    console.log('[AdminPanelRoutes] Agent files directory:', AGENT_FILES_DIR);
 
   
 
@@ -130,7 +138,22 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
            }
        }
    });
-    // --- End System Monitor Routes ---
+
+   // 新增：获取天气预报数据
+   adminApiRouter.get('/weather', async (req, res) => {
+       const weatherCachePath = path.join(__dirname, '..', 'Plugin', 'WeatherReporter', 'weather_cache.json');
+       try {
+           const content = await fs.readFile(weatherCachePath, 'utf-8');
+           res.json(JSON.parse(content));
+       } catch (error) {
+           if (error.code === 'ENOENT') {
+               res.status(404).json({ success: false, error: '天气缓存文件未找到。' });
+           } else {
+               res.status(500).json({ success: false, error: '读取天气缓存失败。', details: error.message });
+           }
+       }
+   });
+   // --- End System Monitor Routes ---
  
     // --- Server Log API ---
     adminApiRouter.get('/server-log', async (req, res) => {
@@ -139,9 +162,76 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             return res.status(503).json({ error: 'Server log path not available.', content: '服务器日志路径当前不可用，可能仍在初始化中。' });
         }
         try {
-            await fs.access(logPath);
-            const content = await fs.readFile(logPath, 'utf-8');
-            res.json({ content: content, path: logPath });
+            const stats = await fs.stat(logPath);
+            const currentInode = stats.ino;
+            const fileSize = stats.size;
+
+            // 检查是否请求增量读取
+            const incremental = req.query.incremental === 'true';
+            const offset = parseInt(req.query.offset || '0', 10);
+
+            // 检测日志轮转（inode 变化或文件变小）
+            const lastInode = logFileInodes.get(logPath);
+            if (incremental && lastInode && (currentInode !== lastInode || offset > fileSize)) {
+                logFileInodes.set(logPath, currentInode);
+                return res.json({
+                    needFullReload: true,
+                    path: logPath,
+                    offset: 0
+                });
+            }
+
+            logFileInodes.set(logPath, currentInode);
+
+            let content = '';
+            let newOffset = 0;
+
+            const fd = await fs.open(logPath, 'r');
+            try {
+                if (incremental && offset >= 0 && offset <= fileSize) {
+                    // 增量读取：从 offset 位置开始
+                    const bufferSize = fileSize - offset;
+                    if (bufferSize > 0) {
+                        const buffer = Buffer.alloc(bufferSize);
+                        const { bytesRead } = await fd.read(buffer, 0, bufferSize, offset);
+                        content = buffer.toString('utf-8', 0, bytesRead);
+                    }
+                    newOffset = fileSize;
+                } else {
+                    // 完整读取（但限制大小）
+                    const maxReadSize = 2 * 1024 * 1024; // 2MB
+                    let startPos = 0;
+                    let readSize = fileSize;
+
+                    if (fileSize > maxReadSize) {
+                        startPos = fileSize - maxReadSize;
+                        readSize = maxReadSize;
+                    }
+
+                    const buffer = Buffer.alloc(readSize);
+                    const { bytesRead } = await fd.read(buffer, 0, readSize, startPos);
+                    content = buffer.toString('utf-8', 0, bytesRead);
+                    
+                    // 如果是截断读取，跳过第一行（可能不完整）
+                    if (startPos > 0) {
+                        const firstNewline = content.indexOf('\n');
+                        if (firstNewline !== -1) {
+                            content = content.substring(firstNewline + 1);
+                        }
+                    }
+                    newOffset = fileSize;
+                }
+            } finally {
+                await fd.close();
+            }
+
+            res.json({
+                content: content,
+                offset: newOffset,
+                path: logPath,
+                fileSize: fileSize,
+                needFullReload: false
+            });
         } catch (error) {
             if (error.code === 'ENOENT') {
                 console.warn(`[AdminPanelRoutes API] /server-log - Log file not found at: ${logPath}`);
@@ -150,6 +240,27 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
                 console.error(`[AdminPanelRoutes API] Error reading server log file ${logPath}:`, error);
                 res.status(500).json({ error: 'Failed to read server log file', details: error.message, content: `读取日志文件 ${logPath} 失败。`, path: logPath });
             }
+        }
+    });
+
+    // 清空日志文件
+    adminApiRouter.post('/server-log/clear', async (req, res) => {
+        const logPath = getCurrentServerLogPath();
+        if (!logPath) {
+            return res.status(503).json({ error: 'Server log path not available.' });
+        }
+        try {
+            // 使用 truncate 清空文件内容
+            await fs.writeFile(logPath, '', 'utf-8');
+            
+            // 更新 inode 记录，防止增量读取出错
+            const stats = await fs.stat(logPath);
+            logFileInodes.set(logPath, stats.ino);
+
+            res.json({ success: true, message: '日志已清空' });
+        } catch (error) {
+            console.error(`[AdminPanelRoutes API] Error clearing server log file ${logPath}:`, error);
+            res.status(500).json({ error: 'Failed to clear server log file', details: error.message });
         }
     });
     // --- End Server Log API ---
@@ -690,282 +801,8 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
     // --- End Image Cache API ---
 
     // --- Daily Notes API ---
-    // dailyNoteRootPath is passed as a parameter
-
-    // GET all folder names in dailynote directory
-    adminApiRouter.get('/dailynotes/folders', async (req, res) => {
-        try {
-            await fs.access(dailyNoteRootPath); 
-            const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
-            const folders = entries
-                .filter(entry => entry.isDirectory())
-                .map(entry => entry.name);
-            res.json({ folders });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn('[AdminPanelRoutes API] /dailynotes/folders - dailynote directory not found.');
-                res.json({ folders: [] }); 
-            } else {
-                console.error('[AdminPanelRoutes API] Error listing daily note folders:', error);
-                res.status(500).json({ error: 'Failed to list daily note folders', details: error.message });
-            }
-        }
-    });
-
-    // GET all note files in a specific folder with last modified time
-    adminApiRouter.get('/dailynotes/folder/:folderName', async (req, res) => {
-        const folderName = req.params.folderName;
-        const specificFolderParentPath = path.join(dailyNoteRootPath, folderName);
-
-        try {
-            await fs.access(specificFolderParentPath); 
-            const files = await fs.readdir(specificFolderParentPath);
-            const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
-            const PREVIEW_LENGTH = 100;
-
-            const notes = await Promise.all(noteFiles.map(async (file) => {
-                const filePath = path.join(specificFolderParentPath, file);
-                const stats = await fs.stat(filePath);
-                let preview = '';
-                try {
-                    const content = await fs.readFile(filePath, 'utf-8');
-                    preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
-                } catch (readError) {
-                    console.warn(`[AdminPanelRoutes API] Error reading file for preview ${filePath}: ${readError.message}`);
-                    preview = '[无法加载预览]';
-                }
-                return {
-                    name: file,
-                    lastModified: stats.mtime.toISOString(),
-                    preview: preview
-                };
-            }));
-
-            // Sort by lastModified time, newest first
-            notes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
-            res.json({ notes });
- 
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn(`[AdminPanelRoutes API] /dailynotes/folder/${folderName} - Folder not found.`);
-                res.status(404).json({ error: `Folder '${folderName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error listing notes in folder ${folderName}:`, error);
-                res.status(500).json({ error: `Failed to list notes in folder ${folderName}`, details: error.message });
-            }
-        }
-    });
-
-    // New API endpoint for searching notes with full content
-    adminApiRouter.get('/dailynotes/search', async (req, res) => {
-        const { term, folder } = req.query; 
-
-        if (!term || typeof term !== 'string' || term.trim() === '') {
-            return res.status(400).json({ error: 'Search term is required.' });
-        }
-
-        const searchTerm = term.trim().toLowerCase();
-        const PREVIEW_LENGTH = 100; 
-        let foldersToSearch = [];
-        const matchedNotes = [];
-
-        try {
-            if (folder && typeof folder === 'string' && folder.trim() !== '') {
-                const specificFolderPath = path.join(dailyNoteRootPath, folder);
-                try {
-                    await fs.access(specificFolderPath); 
-                    if ((await fs.stat(specificFolderPath)).isDirectory()) {
-                        foldersToSearch.push({ name: folder, path: specificFolderPath });
-                    } else {
-                        console.warn(`[AdminPanelRoutes API Search] Specified path '${folder}' is not a directory.`);
-                        return res.status(404).json({ error: `Specified path '${folder}' is not a directory.`});
-                    }
-                } catch (e) {
-                    console.warn(`[AdminPanelRoutes API Search] Specified folder '${folder}' not found during access check.`);
-                    return res.status(404).json({ error: `Specified folder '${folder}' not found.` });
-                }
-            } else {
-                await fs.access(dailyNoteRootPath);
-                const entries = await fs.readdir(dailyNoteRootPath, { withFileTypes: true });
-                entries.filter(entry => entry.isDirectory()).forEach(dir => {
-                    foldersToSearch.push({ name: dir.name, path: path.join(dailyNoteRootPath, dir.name) });
-                });
-                if (foldersToSearch.length === 0) {
-                     console.log('[AdminPanelRoutes API Search] No folders found in dailynote directory for global search.');
-                     return res.json({ notes: [] });
-                }
-            }
-
-            for (const dir of foldersToSearch) {
-                const files = await fs.readdir(dir.path);
-                const noteFiles = files.filter(file => file.toLowerCase().endsWith('.txt') || file.toLowerCase().endsWith('.md'));
-
-                for (const fileName of noteFiles) {
-                    const filePath = path.join(dir.path, fileName);
-                    try {
-                        const content = await fs.readFile(filePath, 'utf-8');
-                        if (content.toLowerCase().includes(searchTerm)) {
-                            const stats = await fs.stat(filePath);
-                            let preview = content.substring(0, PREVIEW_LENGTH).replace(/\n/g, ' ') + (content.length > PREVIEW_LENGTH ? '...' : '');
-                            matchedNotes.push({
-                                name: fileName,
-                                folderName: dir.name, 
-                                lastModified: stats.mtime.toISOString(),
-                                preview: preview
-                            });
-                        }
-                    } catch (readError) {
-                        console.warn(`[AdminPanelRoutes API Search] Error reading file ${filePath} for search: ${readError.message}`);
-                    }
-                }
-            }
-
-            // Sort by lastModified time, newest first
-            matchedNotes.sort((a, b) => new Date(b.lastModified) - new Date(a.lastModified));
- 
-            res.json({ notes: matchedNotes });
-
-        } catch (error) {
-            if (error.code === 'ENOENT' && error.path && error.path.includes('dailynote')) {
-                console.warn('[AdminPanelRoutes API Search] dailynote directory not found.');
-                return res.json({ notes: [] }); 
-            }
-            console.error('[AdminPanelRoutes API Search] Error during daily note search:', error);
-            res.status(500).json({ error: 'Failed to search daily notes', details: error.message });
-        }
-    });
-
-    // GET content of a specific note file
-    adminApiRouter.get('/dailynotes/note/:folderName/:fileName', async (req, res) => {
-        const { folderName, fileName } = req.params;
-        const filePath = path.join(dailyNoteRootPath, folderName, fileName);
-
-        try {
-            await fs.access(filePath); 
-            const content = await fs.readFile(filePath, 'utf-8');
-            res.json({ content });
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                console.warn(`[AdminPanelRoutes API] /dailynotes/note/${folderName}/${fileName} - File not found.`);
-                res.status(404).json({ error: `Note file '${fileName}' in folder '${folderName}' not found.` });
-            } else {
-                console.error(`[AdminPanelRoutes API] Error reading note file ${folderName}/${fileName}:`, error);
-                res.status(500).json({ error: `Failed to read note file ${folderName}/${fileName}`, details: error.message });
-            }
-        }
-    });
-
-    // POST to save/update content of a specific note file
-    adminApiRouter.post('/dailynotes/note/:folderName/:fileName', async (req, res) => {
-        const { folderName, fileName } = req.params;
-        const { content } = req.body;
-
-        if (typeof content !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { content: string }.' });
-        }
-
-        const targetFolderPath = path.join(dailyNoteRootPath, folderName); 
-        const filePath = path.join(targetFolderPath, fileName);
-
-        try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-            await fs.writeFile(filePath, content, 'utf-8');
-            res.json({ message: `Note '${fileName}' in folder '${folderName}' saved successfully.` });
-        } catch (error) {
-            console.error(`[AdminPanelRoutes API] Error saving note file ${folderName}/${fileName}:`, error);
-            res.status(500).json({ error: `Failed to save note file ${folderName}/${fileName}`, details: error.message });
-        }
-    });
-
-    // POST to move one or more notes to a different folder
-    adminApiRouter.post('/dailynotes/move', async (req, res) => {
-        const { sourceNotes, targetFolder } = req.body;
-
-        if (!Array.isArray(sourceNotes) || sourceNotes.some(n => !n.folder || !n.file) || typeof targetFolder !== 'string') {
-            return res.status(400).json({ error: 'Invalid request body. Expected { sourceNotes: [{folder, file}], targetFolder: string }.' });
-        }
-
-        const results = {
-            moved: [],
-            errors: []
-        };
-
-        const targetFolderPath = path.join(dailyNoteRootPath, targetFolder);
-
-        try {
-            await fs.mkdir(targetFolderPath, { recursive: true });
-        } catch (mkdirError) {
-            console.error(`[AdminPanelRoutes API] Error creating target folder ${targetFolder} for move:`, mkdirError);
-            return res.status(500).json({ error: `Failed to create target folder '${targetFolder}'`, details: mkdirError.message });
-        }
-
-        for (const note of sourceNotes) {
-            const sourceFilePath = path.join(dailyNoteRootPath, note.folder, note.file);
-            const destinationFilePath = path.join(targetFolderPath, note.file); 
-
-            try {
-                await fs.access(sourceFilePath);
-                try {
-                    await fs.access(destinationFilePath);
-                    results.errors.push({
-                        note: `${note.folder}/${note.file}`,
-                        error: `File already exists at destination '${targetFolder}/${note.file}'. Move aborted for this file.`
-                    });
-                    continue; 
-                } catch (destAccessError) {
-                    // Destination file does not exist, proceed with move
-                }
-                
-                await fs.rename(sourceFilePath, destinationFilePath);
-                results.moved.push(`${note.folder}/${note.file} to ${targetFolder}/${note.file}`);
-            } catch (error) {
-                if (error.code === 'ENOENT' && error.path === sourceFilePath) {
-                     results.errors.push({ note: `${note.folder}/${note.file}`, error: 'Source file not found.' });
-                } else {
-                    console.error(`[AdminPanelRoutes API] Error moving note ${note.folder}/${note.file} to ${targetFolder}:`, error);
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-                }
-            }
-        }
-
-        const message = `Moved ${results.moved.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
-        res.json({ message, moved: results.moved, errors: results.errors });
-    });
-
-    // POST to delete multiple notes
-    if (DEBUG_MODE) console.log('[AdminPanelRoutes DEBUG] Attempting to register POST /admin_api/dailynotes/delete-batch');
-    adminApiRouter.post('/dailynotes/delete-batch', async (req, res) => {
-        if (DEBUG_MODE) console.log('[AdminPanelRoutes DEBUG] POST /admin_api/dailynotes/delete-batch route hit!');
-        const { notesToDelete } = req.body; 
-
-        if (!Array.isArray(notesToDelete) || notesToDelete.some(n => !n.folder || !n.file)) {
-            return res.status(400).json({ error: 'Invalid request body. Expected { notesToDelete: [{folder, file}] }.' });
-        }
-
-        const results = {
-            deleted: [],
-            errors: []
-        };
-
-        for (const note of notesToDelete) {
-            const filePath = path.join(dailyNoteRootPath, note.folder, note.file);
-            try {
-                await fs.access(filePath); 
-                await fs.unlink(filePath); 
-                results.deleted.push(`${note.folder}/${note.file}`);
-            } catch (error) {
-                if (error.code === 'ENOENT') {
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: 'File not found.' });
-                } else {
-                    console.error(`[AdminPanelRoutes API] Error deleting note ${note.folder}/${note.file}:`, error);
-                    results.errors.push({ note: `${note.folder}/${note.file}`, error: error.message });
-                }
-            }
-        }
-
-        const message = `Deleted ${results.deleted.length} note(s). ${results.errors.length > 0 ? `Encountered ${results.errors.length} error(s).` : ''}`;
-        res.json({ message, deleted: results.deleted, errors: results.errors });
-    });
+    const dailyNotesRoutes = require('./dailyNotesRoutes')(dailyNoteRootPath, DEBUG_MODE);
+    adminApiRouter.use('/dailynotes', dailyNotesRoutes);
     // --- End Daily Notes API ---
 
     // --- Agent Files API ---
@@ -1185,6 +1022,81 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
         }
     });
     // --- End TVS Variable Files API ---
+
+    // --- Schedule Manager API ---
+    const SCHEDULE_FILE = path.join(__dirname, '..', 'Plugin', 'ScheduleManager', 'schedules.json');
+
+    adminApiRouter.get('/schedules', async (req, res) => {
+        try {
+            let schedules = [];
+            try {
+                const content = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(content);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+            res.json(schedules);
+        } catch (error) {
+            console.error('[AdminAPI] Error getting schedules:', error);
+            res.status(500).json({ error: 'Failed to get schedules', details: error.message });
+        }
+    });
+
+    adminApiRouter.post('/schedules', async (req, res) => {
+        try {
+            const { time, content } = req.body;
+            if (!time || !content) {
+                return res.status(400).json({ error: 'Time and content are required.' });
+            }
+            
+            let schedules = [];
+            try {
+                const fileContent = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(fileContent);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+
+            const newSchedule = {
+                id: Date.now().toString(),
+                time,
+                content
+            };
+            schedules.push(newSchedule);
+            await fs.writeFile(SCHEDULE_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
+            res.json({ status: 'success', result: `日程已添加。ID: ${newSchedule.id}`, schedule: newSchedule });
+        } catch (error) {
+            console.error('[AdminAPI] Error adding schedule:', error);
+            res.status(500).json({ error: 'Failed to add schedule', details: error.message });
+        }
+    });
+
+    adminApiRouter.delete('/schedules/:id', async (req, res) => {
+        try {
+            const { id } = req.params;
+            let schedules = [];
+            try {
+                const fileContent = await fs.readFile(SCHEDULE_FILE, 'utf-8');
+                schedules = JSON.parse(fileContent);
+            } catch (e) {
+                if (e.code !== 'ENOENT') throw e;
+            }
+
+            const initialLength = schedules.length;
+            schedules = schedules.filter(s => s.id !== id);
+            
+            if (schedules.length === initialLength) {
+                return res.status(404).json({ error: `未找到 ID 为 ${id} 的日程。` });
+            }
+
+            await fs.writeFile(SCHEDULE_FILE, JSON.stringify(schedules, null, 2), 'utf-8');
+            res.json({ status: 'success', result: `日程 ${id} 已删除。` });
+        } catch (error) {
+            console.error('[AdminAPI] Error deleting schedule:', error);
+            res.status(500).json({ error: 'Failed to delete schedule', details: error.message });
+        }
+    });
+    // --- End Schedule Manager API ---
 
     // --- RAG Tags API ---
     adminApiRouter.get('/rag-tags', async (req, res) => {
@@ -1933,6 +1845,47 @@ module.exports = function(DEBUG_MODE, dailyNoteRootPath, pluginManager, getCurre
             console.error('[AdminAPI] Error exporting to txt:', error);
             res.status(500).json({ error: 'Failed to export to txt', details: error.message });
         }
+    });
+
+    // 新增：验证登录端点
+    adminApiRouter.post('/verify-login', (req, res) => {
+        // 能到达这里说明已通过 adminAuth 验证
+        // 设置认证 Cookie（24小时有效）
+        if (req.headers.authorization) {
+            const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+            const cookieOptions = [
+                `admin_auth=${encodeURIComponent(req.headers.authorization)}`,
+                'Path=/',
+                'HttpOnly',
+                'SameSite=Strict',
+                'Max-Age=86400' // 24小时
+            ];
+            
+            // 如果是 HTTPS，添加 Secure 标志
+            if (isSecure) {
+                cookieOptions.push('Secure');
+            }
+            
+            res.setHeader('Set-Cookie', cookieOptions.join('; '));
+        }
+        
+        res.status(200).json({
+            status: 'success',
+            message: 'Authentication successful'
+        });
+    });
+
+    // 可选：添加登出端点
+    adminApiRouter.post('/logout', (req, res) => {
+        // 清除认证 Cookie
+        res.setHeader('Set-Cookie', 'admin_auth=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+        res.status(200).json({ status: 'success', message: 'Logged out' });
+    });
+
+    // 新增：检查认证状态端点
+    adminApiRouter.get('/check-auth', (req, res) => {
+        // 能到达这里说明已通过 adminAuth 中间件验证
+        res.status(200).json({ authenticated: true });
     });
     
     return adminApiRouter;
