@@ -656,16 +656,13 @@ class KnowledgeBaseManager {
                             
                         sortedRelated.forEach(([relId, weight]) => {
                             if (!seenTagIds.has(relId)) {
-                                const relTagRow = this.db.prepare("SELECT name, vector FROM tags WHERE id = ?").get(relId);
-                                if (relTagRow) {
-                                    allTags.push({
-                                        id: relId,
-                                        name: relTagRow.name,
-                                        adjustedWeight: parentTag.adjustedWeight * 0.5, // 关联词权重减半
-                                        isPullback: true
-                                    });
-                                    seenTagIds.add(relId);
-                                }
+                                // 仅记录 ID，稍后统一批量查询
+                                allTags.push({
+                                    id: relId,
+                                    adjustedWeight: parentTag.adjustedWeight * 0.5, // 关联词权重减半
+                                    isPullback: true
+                                });
+                                seenTagIds.add(relId);
                             }
                         });
                     }
@@ -674,14 +671,24 @@ class KnowledgeBaseManager {
 
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 
-            // [5] 构建上下文向量
+            // [5] 批量获取向量与名称 (性能优化：1次查询替代 N次循环查询)
+            const allTagIds = allTags.map(t => t.id);
+            const tagRows = this.db.prepare(
+                `SELECT id, name, vector FROM tags WHERE id IN (${allTagIds.map(() => '?').join(',')})`
+            ).all(...allTagIds);
+            const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
+
+            // [6] 构建上下文向量
             const contextVec = new Float32Array(dim);
             let totalWeight = 0;
             
             for (const t of allTags) {
-                const row = this.db.prepare("SELECT vector FROM tags WHERE id = ?").get(t.id);
-                if (row && row.vector) {
-                    const v = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+                const data = tagDataMap.get(t.id);
+                if (data && data.vector) {
+                    // 补全名称（针对 Pullback 标签）
+                    if (!t.name) t.name = data.name;
+                    
+                    const v = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                     for (let d = 0; d < dim; d++) contextVec[d] += v[d] * t.adjustedWeight;
                     totalWeight += t.adjustedWeight;
                 }
