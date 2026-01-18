@@ -283,6 +283,8 @@ class RAGDiaryPlugin {
         this.maxCacheSize = parseInt(process.env.RAG_CACHE_MAX_SIZE) || 100;
         this.cacheTTL = parseInt(process.env.RAG_CACHE_TTL_MS) || 3600000;
         this.queryCacheEnabled = (process.env.RAG_QUERY_CACHE_ENABLED || 'true').toLowerCase() === 'true';
+        // ✅ 新增：读取上下文向量化 API 许可配置
+        this.contextVectorAllowApi = (process.env.CONTEXT_VECTOR_ALLOW_API_HISTORY || 'false').toLowerCase() === 'true';
 
         if (this.queryCacheEnabled) {
             console.log(`[RAGDiaryPlugin] 查询缓存已启用 (最大: ${this.maxCacheSize}条, TTL: ${this.cacheTTL}ms)`);
@@ -752,6 +754,64 @@ class RAGDiaryPlugin {
     }
 
     /**
+     * 🌟 V3.7 新增：工具调用净化器 (Tool Call Sanitizer)
+     * 移除 AI 工具调用的技术标记，防止其作为“英文偏好”噪音干扰向量搜索
+     */
+    _stripToolMarkers(text) {
+        if (!text || typeof text !== 'string') return text;
+
+        // 1. 识别完整的工具调用块 <<<[TOOL_REQUEST]>>> ... <<<[END_TOOL_REQUEST]>>>
+        let processed = text.replace(/<<<\[?TOOL_REQUEST\]?>>>([\s\S]*?)<<<\[?END_TOOL_REQUEST\]?>>>/gi, (match, block) => {
+            // 2. 提取并过滤键值对，支持 key:「始」value「末」 格式
+            const blacklistedKeys = ['tool_name', 'command', 'archery', 'maid'];
+            const blacklistedValues = ['dailynote', 'update', 'create', 'no_reply'];
+            
+            const results = [];
+            // 🌟 关键修复：匹配完整的 「始」...「末」 容器，防止内容截断
+            const regex = /(\w+):\s*[「『]始[」』]([\s\S]*?)[「『]末[」』]/g;
+            let m;
+            while ((m = regex.exec(block)) !== null) {
+                const key = m[1].toLowerCase();
+                const val = m[2].trim();
+                const valLower = val.toLowerCase();
+                
+                const isTechKey = blacklistedKeys.includes(key);
+                const isTechVal = blacklistedValues.some(bv => valLower.includes(bv));
+                
+                if (!isTechKey && !isTechVal && val.length > 1) {
+                    results.push(val);
+                }
+            }
+
+            // 如果正则没匹配到（可能是旧格式或非标准格式），回退到行处理
+            if (results.length === 0) {
+                return block.split('\n')
+                    .map(line => {
+                        const cleanLine = line.replace(/\w+:\s*[「『]始[」』]/g, '').replace(/[「『]末[」』]/g, '').trim();
+                        const lower = cleanLine.toLowerCase();
+                        if (blacklistedValues.some(bv => lower.includes(bv))) return '';
+                        return cleanLine;
+                    })
+                    .filter(l => l.length > 0)
+                    .join('\n');
+            }
+
+            return results.join('\n');
+        });
+
+        // 3. 移除起止符和残余标记
+        return processed
+            .replace(/<<<\[?TOOL_REQUEST\]?>>>/gi, '')
+            .replace(/<<<\[?END_TOOL_REQUEST\]?>>>/gi, '')
+            .replace(/[「」『』]始[「」『』]/g, '')
+            .replace(/[「」『』]末[「」『』]/g, '')
+            .replace(/[「」『』]/g, '')
+            .replace(/[ \t]+/g, ' ') // 仅压缩水平空格，保留换行
+            .replace(/\n{3,}/g, '\n\n') // 压缩过多换行
+            .trim();
+    }
+
+    /**
      * 更精确的 Base64 检测函数
      * @param {string} str - 要检测的字符串
      * @returns {boolean} 是否可能是 Base64 数据
@@ -891,7 +951,8 @@ class RAGDiaryPlugin {
     async processMessages(messages, pluginConfig) {
         try {
             // ✅ 新增：更新上下文向量映射（为后续衰减聚合做准备）
-            await this.contextVectorManager.updateContext(messages);
+            // 🌟 修复：传递 allowApi 配置，控制是否允许向量化历史消息
+            await this.contextVectorManager.updateContext(messages, { allowApi: this.contextVectorAllowApi });
 
             // V3.0: 支持多system消息处理
             // 1. 识别所有需要处理的 system 消息（包括日记本、元思考和全局AIMemo开关）
@@ -956,6 +1017,7 @@ class RAGDiaryPlugin {
                 const originalUserContent = userContent;
                 userContent = this._stripHtml(userContent);
                 userContent = this._stripEmoji(userContent);
+                userContent = this._stripToolMarkers(userContent); // ✅ 新增：净化工具调用噪音
                 if (originalUserContent.length !== userContent.length) {
                     console.log('[RAGDiaryPlugin] User content was sanitized (HTML + Emoji removed).');
                 }
@@ -964,6 +1026,7 @@ class RAGDiaryPlugin {
                 const originalAiContent = aiContent;
                 aiContent = this._stripHtml(aiContent);
                 aiContent = this._stripEmoji(aiContent);
+                aiContent = this._stripToolMarkers(aiContent); // ✅ 新增：净化工具调用噪音
                 if (originalAiContent.length !== aiContent.length) {
                     console.log('[RAGDiaryPlugin] AI content was sanitized (HTML + Emoji removed).');
                 }
@@ -977,7 +1040,8 @@ class RAGDiaryPlugin {
             console.log(`[RAGDiaryPlugin] 准备向量化 - User: ${userContent.substring(0, 100)}...`);
             // ✅ 关键修复：使用带缓存的向量化方法
             const userVector = userContent ? await this.getSingleEmbeddingCached(userContent) : null;
-            const aiVector = aiContent ? await this.getSingleEmbeddingCached(aiContent) : null;
+            // 🌟 修复：aiVector 的获取也应受 contextVectorAllowApi 约束，防止无视配置强制向量化导致污染
+            const aiVector = (aiContent && this.contextVectorAllowApi) ? await this.getSingleEmbeddingCached(aiContent) : null;
 
             // 🌟 V3 增强：使用衰减聚合向量
             const aggregatedAiVector = this.contextVectorManager.aggregateContext('assistant');
@@ -1420,8 +1484,8 @@ class RAGDiaryPlugin {
         const { lastAiMessage, toolResultsText } = contextData;
         
         // 1. 分别净化用户、AI 和工具的内容
-        const sanitizedUserContent = this._stripEmoji(this._stripHtml(originalUserQuery || ''));
-        const sanitizedAiContent = this._stripEmoji(this._stripHtml(lastAiMessage || ''));
+        const sanitizedUserContent = this._stripToolMarkers(this._stripEmoji(this._stripHtml(originalUserQuery || '')));
+        const sanitizedAiContent = this._stripToolMarkers(this._stripEmoji(this._stripHtml(lastAiMessage || '')));
         
         // [优化] 处理工具结果：先清理 Base64，再将 JSON 转换为 Markdown 以减少向量噪音
         let toolContentForVector = '';

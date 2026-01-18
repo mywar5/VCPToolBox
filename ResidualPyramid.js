@@ -11,7 +11,7 @@ class ResidualPyramid {
         this.config = {
             maxLevels: config.maxLevels || 3,
             topK: config.topK || 10,
-            residualThreshold: config.residualThreshold || 0.3,
+            residualThreshold: config.residualThreshold || 0.1, // 90% 能量截断 (1 - 0.1)
             dimension: config.dimension || 3072,
             ...config
         };

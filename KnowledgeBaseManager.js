@@ -34,19 +34,23 @@ class KnowledgeBaseManager {
             // ⚠️ 务必确认环境变量 VECTORDB_DIMENSION 与模型一致 (3-small通常为1536)
             dimension: parseInt(process.env.VECTORDB_DIMENSION) || 3072,
             
-            batchWindow: 2000,
-            maxBatchSize: 50,
-            indexSaveDelay: 120000, // 日记索引的保存延迟 (2分钟)
-            tagIndexSaveDelay: 300000, // 全局Tag索引的保存延迟 (5分钟)
+            batchWindow: parseInt(process.env.KNOWLEDGEBASE_BATCH_WINDOW_MS, 10) || 2000,
+            maxBatchSize: parseInt(process.env.KNOWLEDGEBASE_MAX_BATCH_SIZE, 10) || 50,
+            indexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_INDEX_SAVE_DELAY, 10) || 120000,
+            tagIndexSaveDelay: parseInt(process.env.KNOWLEDGEBASE_TAG_INDEX_SAVE_DELAY, 10) || 300000,
             
             ignoreFolders: (process.env.IGNORE_FOLDERS || 'VCP论坛').split(',').map(f => f.trim()).filter(Boolean),
-            ignorePrefixes: (process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
-            ignoreSuffixes: (process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
+            ignorePrefixes: (process.env.IGNORE_PREFIXES || process.env.IGNORE_PREFIX || '已整理').split(',').map(p => p.trim()).filter(Boolean),
+            ignoreSuffixes: (process.env.IGNORE_SUFFIXES || process.env.IGNORE_SUFFIX || '夜伽').split(',').map(s => s.trim()).filter(Boolean),
 
             tagBlacklist: new Set((process.env.TAG_BLACKLIST || '').split(',').map(t => t.trim()).filter(Boolean)),
             tagBlacklistSuper: (process.env.TAG_BLACKLIST_SUPER || '').split(',').map(t => t.trim()).filter(Boolean),
             tagExpandMaxCount: parseInt(process.env.TAG_EXPAND_MAX_COUNT, 10) || 30,
             fullScanOnStartup: (process.env.KNOWLEDGEBASE_FULL_SCAN_ON_STARTUP || 'true').toLowerCase() === 'true',
+            // 语言置信度补偿配置
+            langConfidenceEnabled: (process.env.LANG_CONFIDENCE_GATING_ENABLED || 'true').toLowerCase() === 'true',
+            langPenaltyUnknown: parseFloat(process.env.LANG_PENALTY_UNKNOWN) || 0.05,
+            langPenaltyCrossDomain: parseFloat(process.env.LANG_PENALTY_CROSS_DOMAIN) || 0.1,
             ...config
         };
 
@@ -569,7 +573,7 @@ class KnowledgeBaseManager {
     }
 
     /**
-     * 🌟 TagMemo V3 + EPA + Residual Pyramid 增强版
+     * 🌟 TagMemo V3.7 + EPA + Residual Pyramid + Worldview Gating 增强版
      */
     _applyTagBoostV3(vector, baseTagBoost) {
         const debug = true;
@@ -577,11 +581,12 @@ class KnowledgeBaseManager {
         const dim = originalFloat32.length;
 
         try {
-            // [1] EPA 分析 (逻辑深度与共振)
+            // [1] EPA 分析 (逻辑深度与共振) - 识别“你在哪个世界”
             const epaResult = this.epa.project(originalFloat32);
             const resonance = this.epa.detectCrossDomainResonance(originalFloat32);
+            const queryWorld = epaResult.dominantAxes[0]?.label || 'Unknown';
 
-            // [2] 残差金字塔分析 (新颖度与覆盖率)
+            // [2] 残差金字塔分析 (新颖度与覆盖率) - 90% 能量截断
             const pyramid = this.residualPyramid.analyze(originalFloat32);
             const features = pyramid.features;
 
@@ -597,30 +602,93 @@ class KnowledgeBaseManager {
             const effectiveTagBoost = baseTagBoost * Math.min(2.0, Math.max(0.3, dynamicBoostFactor));
             
             if (debug) {
-                console.log(`[TagMemo-V3] Depth=${logicDepth.toFixed(3)}, Entropy=${entropyPenalty.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
-                console.log(`[TagMemo-V3] Coverage=${features.coverage.toFixed(3)}, Novelty=${features.novelty.toFixed(3)}, Activation=${features.tagMemoActivation.toFixed(3)}`);
-                console.log(`[TagMemo-V3] Effective Boost: ${effectiveTagBoost.toFixed(3)}`);
+                console.log(`[TagMemo-V3.7] World=${queryWorld}, Depth=${logicDepth.toFixed(3)}, Resonance=${resonance.resonance.toFixed(3)}`);
+                console.log(`[TagMemo-V3.7] Coverage=${features.coverage.toFixed(3)}, Explained=${(pyramid.totalExplained * 100).toFixed(1)}%`);
+                console.log(`[TagMemo-V3.7] Effective Boost: ${effectiveTagBoost.toFixed(3)}`);
             }
 
-            // [4] 收集金字塔中的所有 Tags 进行增强
+            // [4] 收集金字塔中的所有 Tags 并应用“世界观门控”与“语言补偿”
             const allTags = [];
+            const seenTagIds = new Set();
+            
             pyramid.levels.forEach(level => {
                 level.tags.forEach(t => {
+                    if (seenTagIds.has(t.id)) return;
+                    
+                    // A. 语言置信度补偿 (Language Confidence Gating)
+                    // 如果是纯英文技术词汇且当前不是技术语境，引入惩罚
+                    let langPenalty = 1.0;
+                    if (this.config.langConfidenceEnabled) {
+                        // 扩展技术噪音检测：非中文且符合技术命名特征（允许空格以覆盖如 Dadroit JSON Viewer）
+                        const isTechnicalNoise = !/[\u4e00-\u9fa5]/.test(t.name) && /^[A-Za-z0-9\-_.\s]+$/.test(t.name) && t.name.length > 3;
+                        const isTechnicalWorld = queryWorld !== 'Unknown' && /^[A-Za-z0-9\-_.]+$/.test(queryWorld);
+                        
+                        if (isTechnicalNoise && !isTechnicalWorld) {
+                            // 如果世界观不明或明确非技术，则强烈压制英文技术词汇
+                            langPenalty = queryWorld === 'Unknown' ? this.config.langPenaltyUnknown : this.config.langPenaltyCrossDomain;
+                        }
+                    }
+
+                    // B. 世界观门控 (Worldview Gating)
+                    // 简单实现：如果 Tag 本身有向量，检查其与查询世界的正交性
+                    // 这里暂用 layerDecay 代替复杂的实时投影以保证性能
                     const layerDecay = Math.pow(0.7, level.level);
-                    allTags.push({ ...t, adjustedWeight: t.weight * layerDecay });
+                    
+                    allTags.push({
+                        ...t,
+                        adjustedWeight: t.weight * layerDecay * langPenalty
+                    });
+                    seenTagIds.add(t.id);
                 });
             });
 
+            // [4.5] 逻辑分支拉回 (Logic Pull-back)
+            // 利用共现矩阵拉回与第一梯队 Tag 强相关的逻辑词
+            if (allTags.length > 0 && this.tagCooccurrenceMatrix) {
+                const topTags = allTags.slice(0, 3);
+                topTags.forEach(parentTag => {
+                    const related = this.tagCooccurrenceMatrix.get(parentTag.id);
+                    if (related) {
+                        // 找回前 2 个最相关的关联词
+                        const sortedRelated = Array.from(related.entries())
+                            .sort((a, b) => b[1] - a[1])
+                            .slice(0, 2);
+                            
+                        sortedRelated.forEach(([relId, weight]) => {
+                            if (!seenTagIds.has(relId)) {
+                                // 仅记录 ID，稍后统一批量查询
+                                allTags.push({
+                                    id: relId,
+                                    adjustedWeight: parentTag.adjustedWeight * 0.5, // 关联词权重减半
+                                    isPullback: true
+                                });
+                                seenTagIds.add(relId);
+                            }
+                        });
+                    }
+                });
+            }
+
             if (allTags.length === 0) return { vector: originalFloat32, info: null };
 
-            // [5] 构建上下文向量
+            // [5] 批量获取向量与名称 (性能优化：1次查询替代 N次循环查询)
+            const allTagIds = allTags.map(t => t.id);
+            const tagRows = this.db.prepare(
+                `SELECT id, name, vector FROM tags WHERE id IN (${allTagIds.map(() => '?').join(',')})`
+            ).all(...allTagIds);
+            const tagDataMap = new Map(tagRows.map(r => [r.id, r]));
+
+            // [6] 构建上下文向量
             const contextVec = new Float32Array(dim);
             let totalWeight = 0;
             
             for (const t of allTags) {
-                const row = this.db.prepare("SELECT vector FROM tags WHERE id = ?").get(t.id);
-                if (row && row.vector) {
-                    const v = new Float32Array(row.vector.buffer, row.vector.byteOffset, dim);
+                const data = tagDataMap.get(t.id);
+                if (data && data.vector) {
+                    // 补全名称（针对 Pullback 标签）
+                    if (!t.name) t.name = data.name;
+                    
+                    const v = new Float32Array(data.vector.buffer, data.vector.byteOffset, dim);
                     for (let d = 0; d < dim; d++) contextVec[d] += v[d] * t.adjustedWeight;
                     totalWeight += t.adjustedWeight;
                 }
@@ -653,7 +721,22 @@ class KnowledgeBaseManager {
             return {
                 vector: fused,
                 info: {
-                    matchedTags: allTags.map(t => t.name),
+                    // 仅返回权重足够高的 Tag，过滤掉被压制的噪音，提升召回纯净度
+                    // ⚠️ 修复：使用更精细的相对权重过滤，确保不误删有效标签
+                    matchedTags: (() => {
+                        if (allTags.length === 0) return [];
+                        const maxWeight = Math.max(...allTags.map(t => t.adjustedWeight));
+                        return allTags.filter(t => {
+                            // 检查是否为潜在技术噪音
+                            const isTech = !/[\u4e00-\u9fa5]/.test(t.name) && /^[A-Za-z0-9\-_.\s]+$/.test(t.name);
+                            if (isTech) {
+                                // 对技术噪音应用严格过滤（必须达到最大权重的 20%）
+                                return t.adjustedWeight > maxWeight * 0.2;
+                            }
+                            // 对非技术标签（中文等）保持宽容，只要达到最大权重的 5% 即可保留，防止丢失逻辑分镜
+                            return t.adjustedWeight > maxWeight * 0.05;
+                        }).map(t => t.name);
+                    })(),
                     boostFactor: effectiveTagBoost,
                     epa: { logicDepth, entropy: entropyPenalty, resonance: resonance.resonance },
                     pyramid: { coverage: features.coverage, novelty: features.novelty, depth: features.depth }
@@ -673,8 +756,8 @@ class KnowledgeBaseManager {
      * @returns {{vector: Float32Array, info: object|null}} - 返回增强后的向量和调试信息
      */
     applyTagBoost(vector, tagBoost) {
-        // 包装私有方法，提供稳定的公共接口
-        return this._applyTagBoost(vector, tagBoost);
+        // 🚀 升级：默认使用 V3 增强算法，提供更深层的语义关联和噪音抑制
+        return this._applyTagBoostV3(vector, tagBoost);
     }
 
     /**
